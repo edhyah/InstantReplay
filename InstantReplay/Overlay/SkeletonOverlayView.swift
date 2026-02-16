@@ -3,7 +3,7 @@ import UIKit
 import Vision
 
 final class SkeletonOverlayView: UIView {
-    var observations: [BodyObservation] = [] {
+    var trackingResult: BodyTrackingResult? {
         didSet { setNeedsDisplay() }
     }
 
@@ -26,8 +26,11 @@ final class SkeletonOverlayView: UIView {
         (.rightKnee, .rightAnkle),
     ]
 
-    private let skeletonColor = UIColor.green
+    private let defaultSkeletonColor = UIColor.green
+    private let dominantSkeletonColor = UIColor.cyan
     private let centroidColor = UIColor.yellow
+    private let dominantCentroidColor = UIColor.orange
+    private let velocityLineColor = UIColor.yellow.withAlphaComponent(0.6)
     private let jointRadius: CGFloat = 4
     private let centroidRadius: CGFloat = 7
     private let lineWidth: CGFloat = 2
@@ -45,18 +48,24 @@ final class SkeletonOverlayView: UIView {
     }
 
     override func draw(_ rect: CGRect) {
-        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        guard let ctx = UIGraphicsGetCurrentContext(),
+              let result = trackingResult else { return }
 
-        for body in observations {
-            drawSkeleton(body: body, in: ctx)
-            drawCentroid(body: body, in: ctx)
+        for body in result.trackedBodies {
+            let isDominant = body.id == result.dominantMoverID
+            let skeletonColor = isDominant ? dominantSkeletonColor : defaultSkeletonColor
+            drawSkeleton(body: body, color: skeletonColor, in: ctx)
+            drawVelocityTrail(body: body, in: ctx)
+            drawCentroid(body: body, isDominant: isDominant, in: ctx)
         }
+
+        drawDebugInfo(result: result, in: ctx)
     }
 
-    private func drawSkeleton(body: BodyObservation, in ctx: CGContext) {
+    private func drawSkeleton(body: TrackedBody, color: UIColor, in ctx: CGContext) {
         let joints = body.jointPoints
 
-        ctx.setStrokeColor(skeletonColor.cgColor)
+        ctx.setStrokeColor(color.cgColor)
         ctx.setLineWidth(lineWidth)
 
         for (jointA, jointB) in jointConnections {
@@ -68,7 +77,7 @@ final class SkeletonOverlayView: UIView {
             ctx.strokePath()
         }
 
-        ctx.setFillColor(skeletonColor.cgColor)
+        ctx.setFillColor(color.cgColor)
         for (_, point) in joints {
             let screenPoint = convertToScreen(point)
             let dotRect = CGRect(
@@ -81,10 +90,29 @@ final class SkeletonOverlayView: UIView {
         }
     }
 
-    private func drawCentroid(body: BodyObservation, in ctx: CGContext) {
-        let screenPoint = convertToScreen(body.torsoCentroid)
+    private func drawVelocityTrail(body: TrackedBody, in ctx: CGContext) {
+        let history = body.centroidHistory
+        guard history.count >= 2 else { return }
 
-        ctx.setFillColor(centroidColor.cgColor)
+        ctx.setStrokeColor(velocityLineColor.cgColor)
+        ctx.setLineWidth(2.0)
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+
+        let first = convertToScreen(history[0])
+        ctx.move(to: first)
+        for i in 1..<history.count {
+            let point = convertToScreen(history[i])
+            ctx.addLine(to: point)
+        }
+        ctx.strokePath()
+    }
+
+    private func drawCentroid(body: TrackedBody, isDominant: Bool, in ctx: CGContext) {
+        let screenPoint = convertToScreen(body.centroid)
+        let color = isDominant ? dominantCentroidColor : centroidColor
+
+        ctx.setFillColor(color.cgColor)
         let dotRect = CGRect(
             x: screenPoint.x - centroidRadius,
             y: screenPoint.y - centroidRadius,
@@ -98,17 +126,56 @@ final class SkeletonOverlayView: UIView {
         ctx.strokeEllipse(in: dotRect)
     }
 
+    private func drawDebugInfo(result: BodyTrackingResult, in ctx: CGContext) {
+        let bodyCount = result.trackedBodies.count
+        let dominant = result.trackedBodies.first { $0.id == result.dominantMoverID }
+
+        var lines: [String] = []
+        lines.append("Bodies: \(bodyCount)")
+
+        if let dom = dominant {
+            lines.append(String(format: "H vel: %.3f u/s", dom.horizontalVelocity))
+            lines.append(String(format: "V vel: %.3f u/s", dom.verticalVelocity))
+        } else {
+            lines.append("H vel: ---")
+            lines.append("V vel: ---")
+        }
+
+        let text = lines.joined(separator: "\n") as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.monospacedSystemFont(ofSize: 14, weight: .medium),
+            .foregroundColor: UIColor.white,
+            .backgroundColor: UIColor.black.withAlphaComponent(0.5),
+        ]
+
+        let padding: CGFloat = 12
+        let textSize = text.boundingRect(
+            with: CGSize(width: bounds.width - padding * 2, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin],
+            attributes: attrs,
+            context: nil
+        ).size
+
+        let textOrigin = CGPoint(x: padding, y: padding)
+        let bgRect = CGRect(
+            x: textOrigin.x - 4,
+            y: textOrigin.y - 2,
+            width: textSize.width + 8,
+            height: textSize.height + 4
+        )
+
+        ctx.saveGState()
+        ctx.setFillColor(UIColor.black.withAlphaComponent(0.5).cgColor)
+        ctx.fill(bgRect)
+        ctx.restoreGState()
+
+        text.draw(in: CGRect(origin: textOrigin, size: textSize), withAttributes: attrs)
+    }
+
     private func convertToScreen(_ point: CGPoint) -> CGPoint {
-        // point is in normalized coordinates (0-1) with top-left origin
-        // (Y was flipped from Vision's bottom-left in PoseEstimator)
-        //
-        // AVCaptureVideoPreviewLayer.layerPointConverted(fromCaptureDevicePoint:)
-        // expects normalized coords with top-left origin — exactly what we have.
-        // It accounts for videoGravity (.resizeAspectFill cropping) automatically.
         if let layer = previewLayer {
             return layer.layerPointConverted(fromCaptureDevicePoint: point)
         }
-        // Fallback if no preview layer reference
         return CGPoint(x: point.x * bounds.width, y: point.y * bounds.height)
     }
 }

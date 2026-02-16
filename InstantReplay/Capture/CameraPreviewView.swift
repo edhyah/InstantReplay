@@ -3,7 +3,7 @@ import SwiftUI
 
 struct CameraPreviewView: UIViewRepresentable {
     let cameraManager: CameraManager
-    let observations: [BodyObservation]
+    let trackingResult: BodyTrackingResult?
 
     func makeUIView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
@@ -13,7 +13,7 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PreviewContainerView, context: Context) {
-        uiView.skeletonOverlay.observations = observations
+        uiView.skeletonOverlay.trackingResult = trackingResult
         uiView.skeletonOverlay.previewLayer = uiView.previewLayer
     }
 }

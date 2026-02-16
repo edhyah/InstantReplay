@@ -3,10 +3,10 @@ import SwiftUI
 
 struct ContentView: View {
     let cameraManager: CameraManager
-    @State private var poseObservations: [BodyObservation] = []
+    @State private var trackingResult: BodyTrackingResult?
 
     var body: some View {
-        CameraPreviewView(cameraManager: cameraManager, observations: poseObservations)
+        CameraPreviewView(cameraManager: cameraManager, trackingResult: trackingResult)
             .ignoresSafeArea()
             .persistentSystemOverlays(.hidden)
             .statusBarHidden()
@@ -20,9 +20,9 @@ struct ContentView: View {
     }
 
     private func setupDetectionCallback() {
-        cameraManager.onDetectionUpdate = { observations in
+        cameraManager.onDetectionUpdate = { result in
             DispatchQueue.main.async {
-                self.poseObservations = observations
+                self.trackingResult = result
             }
         }
     }

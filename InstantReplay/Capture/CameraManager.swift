@@ -5,10 +5,11 @@ final class CameraManager: NSObject {
     nonisolated(unsafe) let captureSession = AVCaptureSession()
     let rollingBuffer = RollingBufferManager()
     let poseEstimator = PoseEstimator()
+    let bodyTracker = BodyTracker()
     private let sessionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.camera", qos: .userInitiated)
     private let detectionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.detection", qos: .userInitiated)
 
-    nonisolated(unsafe) var onDetectionUpdate: (@Sendable ([BodyObservation]) -> Void)?
+    nonisolated(unsafe) var onDetectionUpdate: (@Sendable (BodyTrackingResult) -> Void)?
 
     private var isConfigured = false
     private nonisolated(unsafe) var frameCounter: Int = 0
@@ -105,6 +106,7 @@ final class CameraManager: NSObject {
 
     func resetForForeground() {
         rollingBuffer.reset()
+        bodyTracker.reset()
         frameCounter = 0
         isConfigured = false
     }
@@ -126,7 +128,8 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             nonisolated(unsafe) let buffer = pixelBuffer
             detectionQueue.async { [self] in
                 let observations = self.poseEstimator.estimatePoses(buffer)
-                self.onDetectionUpdate?(observations)
+                let trackingResult = self.bodyTracker.update(with: observations)
+                self.onDetectionUpdate?(trackingResult)
             }
         }
     }
