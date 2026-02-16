@@ -9,13 +9,16 @@ struct SegmentInfo: Sendable {
 }
 
 final class RollingBufferManager: @unchecked Sendable {
-    private let writerQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.fileWriter", qos: .utility)
+    // Lock protects all mutable writer state. Held briefly during append (fast path)
+    // and during rotation/finalization (slow path, rare).
+    private let lock = NSLock()
 
     private nonisolated(unsafe) var activeWriter: SegmentWriter?
     private nonisolated(unsafe) var retiringWriter: SegmentWriter?
     private nonisolated(unsafe) var sourceFormatDescription: CMFormatDescription?
 
     private nonisolated(unsafe) var segmentStartTime: CMTime = .zero
+    private nonisolated(unsafe) var lastPresentationTime: CMTime = .zero
     private nonisolated(unsafe) var segmentIndex = 0
 
     private nonisolated(unsafe) var _segments: [SegmentInfo] = []
@@ -50,37 +53,94 @@ final class RollingBufferManager: @unchecked Sendable {
         replayLock.unlock()
     }
 
-    nonisolated func append(_ sampleBuffer: CMSampleBuffer) {
-        nonisolated(unsafe) let buffer = sampleBuffer
-        writerQueue.async { [self] in
-            self.handleAppend(buffer)
+    /// Forces the active segment to finalize. Blocks until finalization is complete
+    /// so the segment file is readable.
+    nonisolated func forceRotation(completion: @escaping @Sendable () -> Void) {
+        lock.lock()
+
+        guard let active = self.activeWriter, self.sourceFormatDescription != nil else {
+            print("[RollingBuffer] forceRotation: no active writer or format desc, skipping")
+            lock.unlock()
+            completion()
+            return
         }
+        print("[RollingBuffer] forceRotation: active=\(active.fileURL.lastPathComponent), lastPTS=\(self.lastPresentationTime.seconds)")
+
+        // If there's already a retiring writer, finalize it first
+        if let retiring = self.retiringWriter {
+            let url = retiring.fileURL
+            let start = retiring.startTimestamp
+            self.retiringWriter = nil
+            lock.unlock()
+
+            let group = DispatchGroup()
+            group.enter()
+            retiring.finalize {
+                group.leave()
+            }
+            group.wait()
+            onSegmentFinalized(url: url, startTimestamp: start, endTimestamp: active.startTimestamp)
+
+            lock.lock()
+        }
+
+        // Swap active writer out and start a new segment
+        let oldWriter = active
+        let oldURL = oldWriter.fileURL
+        let oldStart = oldWriter.startTimestamp
+        let endTime = self.lastPresentationTime
+
+        self.startNewSegment(at: endTime)
+        lock.unlock()
+
+        print("[RollingBuffer] forceRotation: finalizing \(oldURL.lastPathComponent), start=\(oldStart.seconds), end=\(endTime.seconds)")
+
+        let group = DispatchGroup()
+        group.enter()
+        oldWriter.finalize {
+            group.leave()
+        }
+        group.wait()
+
+        print("[RollingBuffer] forceRotation: finalization complete for \(oldURL.lastPathComponent)")
+        onSegmentFinalized(url: oldURL, startTimestamp: oldStart, endTimestamp: endTime)
+        completion()
+    }
+
+    /// Appends a sample buffer to the active writer(s). Called synchronously on the
+    /// camera queue so the pixel buffer is released immediately after encoding.
+    nonisolated func append(_ sampleBuffer: CMSampleBuffer) {
+        lock.lock()
+        handleAppend(sampleBuffer)
+        lock.unlock()
     }
 
     nonisolated func stop() {
-        writerQueue.async { [self] in
-            self.finalizeAll()
-        }
+        lock.lock()
+        finalizeAll()
+        lock.unlock()
     }
 
     nonisolated func reset() {
-        writerQueue.async { [self] in
-            self.finalizeAll()
-            self.cleanupAllSegmentFiles()
+        lock.lock()
+        finalizeAll()
+        cleanupAllSegmentFiles()
 
-            self.segmentsLock.lock()
-            self._segments.removeAll()
-            self.segmentsLock.unlock()
+        segmentsLock.lock()
+        _segments.removeAll()
+        segmentsLock.unlock()
 
-            self.sourceFormatDescription = nil
-            self.segmentIndex = 0
-        }
+        sourceFormatDescription = nil
+        segmentIndex = 0
+        lastPresentationTime = .zero
+        lock.unlock()
     }
 
-    // MARK: - Private (called on writerQueue)
+    // MARK: - Private (caller must hold lock)
 
     private nonisolated func handleAppend(_ sampleBuffer: CMSampleBuffer) {
         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        lastPresentationTime = presentationTime
 
         // Capture format description from the first buffer
         if sourceFormatDescription == nil {
@@ -92,7 +152,7 @@ final class RollingBufferManager: @unchecked Sendable {
             startNewSegment(at: presentationTime)
         }
 
-        guard let active = activeWriter else { return }
+        guard let _ = activeWriter else { return }
 
         // Check if it's time to rotate: start a new overlapping writer
         let elapsed = CMTimeGetSeconds(presentationTime) - CMTimeGetSeconds(segmentStartTime)
@@ -100,7 +160,7 @@ final class RollingBufferManager: @unchecked Sendable {
 
         if elapsed >= rotationPoint && retiringWriter == nil {
             // Begin overlap: start new writer, keep old one alive
-            retiringWriter = active
+            retiringWriter = activeWriter
             startNewSegment(at: presentationTime)
         }
 
@@ -110,10 +170,9 @@ final class RollingBufferManager: @unchecked Sendable {
             if retireElapsed >= CaptureConstants.segmentOverlapDuration {
                 let retiringURL = retiring.fileURL
                 let retiringStart = retiring.startTimestamp
+                let finalizeTime = presentationTime
                 retiring.finalize { [weak self] in
-                    self?.writerQueue.async {
-                        self?.onSegmentFinalized(url: retiringURL, startTimestamp: retiringStart, endTimestamp: presentationTime)
-                    }
+                    self?.onSegmentFinalized(url: retiringURL, startTimestamp: retiringStart, endTimestamp: finalizeTime)
                 }
                 self.retiringWriter = nil
             } else {
@@ -163,9 +222,6 @@ final class RollingBufferManager: @unchecked Sendable {
         let currentSegments = _segments
         segmentsLock.unlock()
 
-        // Keep at most 3 segments: the active one, the previous finalized one,
-        // and potentially one more that a replay might reference.
-        // Delete anything older.
         guard currentSegments.count > 3 else { return }
 
         let toRemoveCount = currentSegments.count - 3
@@ -178,7 +234,7 @@ final class RollingBufferManager: @unchecked Sendable {
         var removedURLs: [URL] = []
         for segment in toRemove {
             if referenced.contains(segment.fileURL) {
-                continue // defer deletion — replay still using this file
+                continue
             }
             try? FileManager.default.removeItem(at: segment.fileURL)
             removedURLs.append(segment.fileURL)
