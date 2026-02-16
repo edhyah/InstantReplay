@@ -11,7 +11,7 @@ struct ContentView: View {
             .persistentSystemOverlays(.hidden)
             .statusBarHidden()
             .onAppear {
-                setupPoseCallback()
+                setupDetectionCallback()
                 requestCameraAccess()
             }
             .onDisappear {
@@ -19,8 +19,8 @@ struct ContentView: View {
             }
     }
 
-    private func setupPoseCallback() {
-        cameraManager.poseEstimator.onPoseUpdate = { observations in
+    private func setupDetectionCallback() {
+        cameraManager.onDetectionUpdate = { observations in
             DispatchQueue.main.async {
                 self.poseObservations = observations
             }

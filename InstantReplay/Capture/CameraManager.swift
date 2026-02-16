@@ -6,6 +6,9 @@ final class CameraManager: NSObject {
     let rollingBuffer = RollingBufferManager()
     let poseEstimator = PoseEstimator()
     private let sessionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.camera", qos: .userInitiated)
+    private let detectionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.detection", qos: .userInitiated)
+
+    nonisolated(unsafe) var onDetectionUpdate: (@Sendable ([BodyObservation]) -> Void)?
 
     private var isConfigured = false
     private nonisolated(unsafe) var frameCounter: Int = 0
@@ -119,9 +122,12 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         // Subsample frames for pose estimation
         frameCounter += 1
         if frameCounter % CaptureConstants.poseSubsamplingRate == 0 {
-            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-            poseEstimator.processFrame(pixelBuffer, timestamp: timestamp)
+            nonisolated(unsafe) let buffer = pixelBuffer
+            detectionQueue.async { [self] in
+                let observations = self.poseEstimator.estimatePoses(buffer)
+                self.onDetectionUpdate?(observations)
+            }
         }
     }
 }

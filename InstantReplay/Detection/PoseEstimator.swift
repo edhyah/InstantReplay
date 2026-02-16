@@ -1,46 +1,19 @@
-import CoreMedia
 import CoreVideo
 import Vision
 
-nonisolated struct BodyObservation: Sendable {
-    let jointPoints: [VNHumanBodyPoseObservation.JointName: CGPoint]
-    let torsoCentroid: CGPoint
-}
-
-final class PoseEstimator: @unchecked Sendable {
-    private let detectionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.detection", qos: .userInitiated)
-
-    private nonisolated(unsafe) var _latestObservations: [BodyObservation] = []
-    private let observationsLock = NSLock()
-
-    nonisolated var latestObservations: [BodyObservation] {
-        observationsLock.lock()
-        defer { observationsLock.unlock() }
-        return _latestObservations
-    }
-
-    nonisolated(unsafe) var onPoseUpdate: (@Sendable ([BodyObservation]) -> Void)?
-
-    nonisolated func processFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
-        nonisolated(unsafe) let buffer = pixelBuffer
-        detectionQueue.async { [self] in
-            self.runPoseEstimation(buffer)
-        }
-    }
-
-    private nonisolated func runPoseEstimation(_ pixelBuffer: CVPixelBuffer) {
+final class PoseEstimator: Sendable {
+    nonisolated func estimatePoses(_ pixelBuffer: CVPixelBuffer) -> [BodyObservation] {
         let request = VNDetectHumanBodyPoseRequest()
 
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
         do {
             try handler.perform([request])
         } catch {
-            return
+            return []
         }
 
         guard let results = request.results, !results.isEmpty else {
-            updateObservations([])
-            return
+            return []
         }
 
         var observations: [BodyObservation] = []
@@ -49,7 +22,7 @@ final class PoseEstimator: @unchecked Sendable {
             observations.append(body)
         }
 
-        updateObservations(observations)
+        return observations
     }
 
     private nonisolated func buildBodyObservation(from pose: VNHumanBodyPoseObservation) -> BodyObservation? {
@@ -93,13 +66,5 @@ final class PoseEstimator: @unchecked Sendable {
         // Need at least 2 torso joints to compute a meaningful centroid
         guard count >= 2 else { return nil }
         return CGPoint(x: sumX / count, y: sumY / count)
-    }
-
-    private nonisolated func updateObservations(_ observations: [BodyObservation]) {
-        observationsLock.lock()
-        _latestObservations = observations
-        observationsLock.unlock()
-
-        onPoseUpdate?(observations)
     }
 }
