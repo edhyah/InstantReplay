@@ -4,9 +4,11 @@ import AVFoundation
 final class CameraManager: NSObject {
     nonisolated(unsafe) let captureSession = AVCaptureSession()
     let rollingBuffer = RollingBufferManager()
+    let poseEstimator = PoseEstimator()
     private let sessionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.camera", qos: .userInitiated)
 
     private var isConfigured = false
+    private nonisolated(unsafe) var frameCounter: Int = 0
 
     func configure() {
         guard !isConfigured else { return }
@@ -100,6 +102,7 @@ final class CameraManager: NSObject {
 
     func resetForForeground() {
         rollingBuffer.reset()
+        frameCounter = 0
         isConfigured = false
     }
 }
@@ -112,5 +115,13 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     ) {
         // Forward every frame to the rolling buffer for disk recording
         rollingBuffer.append(sampleBuffer)
+
+        // Subsample frames for pose estimation
+        frameCounter += 1
+        if frameCounter % CaptureConstants.poseSubsamplingRate == 0 {
+            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+            poseEstimator.processFrame(pixelBuffer, timestamp: timestamp)
+        }
     }
 }
