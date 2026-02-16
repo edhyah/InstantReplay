@@ -37,11 +37,11 @@ final class ClipExtractor: @unchecked Sendable {
         let preRoll = CaptureConstants.clipPreRollDuration
         let postRoll = CaptureConstants.clipPostRollDuration
 
-        let clipStart = CMTimeSubtract(landingTimestamp, CMTimeMakeWithSeconds(preRoll, preferredTimescale: landingTimestamp.timescale))
+        let idealClipStart = CMTimeSubtract(landingTimestamp, CMTimeMakeWithSeconds(preRoll, preferredTimescale: landingTimestamp.timescale))
         let clipEnd = CMTimeAdd(landingTimestamp, CMTimeMakeWithSeconds(postRoll, preferredTimescale: landingTimestamp.timescale))
 
         let segments = rollingBuffer.segments
-        print("[ClipExtractor] clipStart=\(clipStart.seconds), clipEnd=\(clipEnd.seconds)")
+        print("[ClipExtractor] idealClipStart=\(idealClipStart.seconds), clipEnd=\(clipEnd.seconds)")
         print("[ClipExtractor] total segments: \(segments.count)")
         for (i, seg) in segments.enumerated() {
             let endStr = seg.endTimestamp.map { String($0.seconds) } ?? "nil(active)"
@@ -52,7 +52,7 @@ final class ClipExtractor: @unchecked Sendable {
         let relevantSegments = segments.filter { segment in
             guard let segEnd = segment.endTimestamp else { return false }
             let segStart = segment.startTimestamp
-            return CMTimeCompare(segStart, clipEnd) < 0 && CMTimeCompare(segEnd, clipStart) > 0
+            return CMTimeCompare(segStart, clipEnd) < 0 && CMTimeCompare(segEnd, idealClipStart) > 0
         }
 
         print("[ClipExtractor] relevant finalized segments: \(relevantSegments.count)")
@@ -60,6 +60,10 @@ final class ClipExtractor: @unchecked Sendable {
             print("[ClipExtractor] no relevant segments found, returning nil")
             return nil
         }
+
+        // Clamp clip start to earliest available segment (graceful degradation for short pre-roll)
+        let earliestStart = relevantSegments.map { $0.startTimestamp }.min()!
+        let clipStart = CMTimeMaximum(idealClipStart, earliestStart)
 
         let referencedURLs = Set(relevantSegments.map { $0.fileURL })
 
@@ -106,7 +110,10 @@ final class ClipExtractor: @unchecked Sendable {
             }
         }
 
-        guard CMTimeGetSeconds(insertionTime) > 0 else { return nil }
+        guard CMTimeGetSeconds(insertionTime) >= 0.5 else {
+            print("[ClipExtractor] clip too short (\(CMTimeGetSeconds(insertionTime))s), returning nil")
+            return nil
+        }
 
         let timeRange = CMTimeRangeMake(start: .zero, duration: insertionTime)
         return ClipAsset(asset: composition, timeRange: timeRange, referencedURLs: referencedURLs)

@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct InstantReplayApp: App {
     @State private var cameraManager = CameraManager()
+    @State private var hasEnteredForeground = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -14,7 +15,10 @@ struct InstantReplayApp: App {
             case .background:
                 cameraManager.stop()
             case .active:
-                cameraManager.resetForForeground()
+                if hasEnteredForeground {
+                    cameraManager.resetForForeground()
+                }
+                hasEnteredForeground = true
                 cameraManager.configure()
                 cameraManager.start()
             default:

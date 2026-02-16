@@ -7,6 +7,8 @@ struct ContentView: View {
     @State private var debugOverlayVisible: Bool = true
     @State private var replayManager = ReplayManager()
     @State private var showingReplay: Bool = false
+    @State private var replayAvailable: Bool = false
+    @State private var controlsVisible: Bool = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -19,17 +21,24 @@ struct ContentView: View {
             )
             .ignoresSafeArea()
 
-            // Replay layer on top when a clip is available
+            // Replay layer on top when showing replay
             if showingReplay {
                 ReplayPlayerView(replayManager: replayManager)
                     .ignoresSafeArea()
             }
+
+            // Playback controls overlay (only when replay is available)
+            if replayAvailable {
+                PlaybackControlsView(
+                    replayManager: replayManager,
+                    showingReplay: $showingReplay,
+                    visible: $controlsVisible
+                )
+                .ignoresSafeArea()
+            }
         }
         .persistentSystemOverlays(.hidden)
         .statusBarHidden()
-        .onTapGesture(count: 3) {
-            debugOverlayVisible.toggle()
-        }
         .onAppear {
             setupDetectionCallback()
             setupMovementCallback()
@@ -39,11 +48,20 @@ struct ContentView: View {
             cameraManager.stop()
             replayManager.stop()
         }
+        .onChange(of: showingReplay) { _, showing in
+            if showing {
+                replayManager.resume()
+            } else {
+                replayManager.pause()
+            }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 // Reset to pre-first-detection state on foreground
                 replayManager.stop()
                 showingReplay = false
+                replayAvailable = false
+                controlsVisible = false
                 cameraManager.rollingBuffer.clearReplayReference()
             }
         }
@@ -69,6 +87,14 @@ struct ContentView: View {
                 print("[Replay]   segment[\(i)]: start=\(seg.startTimestamp.seconds), end=\(seg.endTimestamp?.seconds ?? -1), url=\(seg.fileURL.lastPathComponent)")
             }
 
+            if let firstSeg = segments.first {
+                let elapsed = CMTimeGetSeconds(CMTimeSubtract(event.landingTimestamp, firstSeg.startTimestamp))
+                if elapsed < 1.0 {
+                    print("[Replay] buffer too short (\(elapsed)s), skipping")
+                    return
+                }
+            }
+
             let allURLs = Set(segments.map { $0.fileURL })
             cameraManager.rollingBuffer.markReplayReference(allURLs)
 
@@ -84,6 +110,8 @@ struct ContentView: View {
                         cameraManager.rollingBuffer.markReplayReference(clip.referencedURLs)
                         replayManager.playClip(clip)
                         showingReplay = true
+                        replayAvailable = true
+                        controlsVisible = false
                         print("[Replay] showingReplay set to true")
                     } else {
                         cameraManager.rollingBuffer.clearReplayReference()
