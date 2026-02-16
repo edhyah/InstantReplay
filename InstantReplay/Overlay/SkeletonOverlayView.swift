@@ -7,7 +7,19 @@ final class SkeletonOverlayView: UIView {
         didSet { setNeedsDisplay() }
     }
 
+    var stateMachineDebug: StateMachineDebugInfo?
+    var captureFPS: Double = 0
+    var detectionFlash: Bool = false {
+        didSet {
+            if detectionFlash {
+                triggerFlash()
+            }
+        }
+    }
+
     weak var previewLayer: AVCaptureVideoPreviewLayer?
+
+    private let flashBorderLayer = CAShapeLayer()
 
     private let jointConnections: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName)] = [
         (.nose, .neck),
@@ -37,14 +49,38 @@ final class SkeletonOverlayView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .clear
-        isUserInteractionEnabled = false
+        commonInit()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        commonInit()
+    }
+
+    private func commonInit() {
         backgroundColor = .clear
         isUserInteractionEnabled = false
+        flashBorderLayer.fillColor = nil
+        flashBorderLayer.strokeColor = UIColor.red.cgColor
+        flashBorderLayer.lineWidth = 6
+        flashBorderLayer.opacity = 0
+        layer.addSublayer(flashBorderLayer)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        flashBorderLayer.frame = bounds
+        flashBorderLayer.path = UIBezierPath(rect: bounds).cgPath
+    }
+
+    private func triggerFlash() {
+        flashBorderLayer.removeAllAnimations()
+        let anim = CABasicAnimation(keyPath: "opacity")
+        anim.fromValue = 1.0
+        anim.toValue = 0.0
+        anim.duration = 0.5
+        anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        flashBorderLayer.add(anim, forKey: "flash")
     }
 
     override func draw(_ rect: CGRect) {
@@ -131,6 +167,14 @@ final class SkeletonOverlayView: UIView {
         let dominant = result.trackedBodies.first { $0.id == result.dominantMoverID }
 
         var lines: [String] = []
+
+        // State machine state
+        if let debug = stateMachineDebug {
+            lines.append("State: \(debug.state.rawValue)")
+        } else {
+            lines.append("State: ---")
+        }
+
         lines.append("Bodies: \(bodyCount)")
 
         if let dom = dominant {
@@ -141,11 +185,27 @@ final class SkeletonOverlayView: UIView {
             lines.append("V vel: ---")
         }
 
+        // Thresholds
+        if let debug = stateMachineDebug {
+            let t = debug.thresholds
+            lines.append(String(format: "Thresh H: %.2f  V up: %.2f", t.approachHorizontalVelocity, t.ascendingVerticalVelocity))
+            lines.append(String(format: "Thresh V dn: %.2f  Land: %.2f", t.descendingVerticalVelocity, t.landingVerticalMagnitude))
+        }
+
+        // Measured FPS
+        lines.append(String(format: "Capture FPS: %.1f", captureFPS))
+        if let debug = stateMachineDebug, debug.poseFramesProcessed > 1 {
+            let elapsed = CACurrentMediaTime() - debug.poseStartTime
+            if elapsed > 0 {
+                let measuredFPS = Double(debug.poseFramesProcessed) / elapsed
+                lines.append(String(format: "Pose FPS: %.1f", measuredFPS))
+            }
+        }
+
         let text = lines.joined(separator: "\n") as NSString
         let attrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedSystemFont(ofSize: 14, weight: .medium),
             .foregroundColor: UIColor.white,
-            .backgroundColor: UIColor.black.withAlphaComponent(0.5),
         ]
 
         let padding: CGFloat = 12
@@ -165,7 +225,7 @@ final class SkeletonOverlayView: UIView {
         )
 
         ctx.saveGState()
-        ctx.setFillColor(UIColor.black.withAlphaComponent(0.5).cgColor)
+        ctx.setFillColor(UIColor.black.withAlphaComponent(0.6).cgColor)
         ctx.fill(bgRect)
         ctx.restoreGState()
 

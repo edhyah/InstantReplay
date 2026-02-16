@@ -3,26 +3,34 @@ import SwiftUI
 
 struct ContentView: View {
     let cameraManager: CameraManager
-    @State private var trackingResult: BodyTrackingResult?
+    @State private var detectionUpdate: DetectionUpdate?
+    @State private var debugOverlayVisible: Bool = true
 
     var body: some View {
-        CameraPreviewView(cameraManager: cameraManager, trackingResult: trackingResult)
-            .ignoresSafeArea()
-            .persistentSystemOverlays(.hidden)
-            .statusBarHidden()
-            .onAppear {
-                setupDetectionCallback()
-                requestCameraAccess()
-            }
-            .onDisappear {
-                cameraManager.stop()
-            }
+        CameraPreviewView(
+            cameraManager: cameraManager,
+            detectionUpdate: detectionUpdate,
+            debugOverlayVisible: debugOverlayVisible
+        )
+        .ignoresSafeArea()
+        .persistentSystemOverlays(.hidden)
+        .statusBarHidden()
+        .onTapGesture(count: 3) {
+            debugOverlayVisible.toggle()
+        }
+        .onAppear {
+            setupDetectionCallback()
+            requestCameraAccess()
+        }
+        .onDisappear {
+            cameraManager.stop()
+        }
     }
 
     private func setupDetectionCallback() {
-        cameraManager.onDetectionUpdate = { result in
+        cameraManager.onDetectionUpdate = { update in
             DispatchQueue.main.async {
-                self.trackingResult = result
+                self.detectionUpdate = update
             }
         }
     }

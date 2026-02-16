@@ -3,7 +3,8 @@ import SwiftUI
 
 struct CameraPreviewView: UIViewRepresentable {
     let cameraManager: CameraManager
-    let trackingResult: BodyTrackingResult?
+    let detectionUpdate: DetectionUpdate?
+    let debugOverlayVisible: Bool
 
     func makeUIView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
@@ -13,7 +14,15 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PreviewContainerView, context: Context) {
-        uiView.skeletonOverlay.trackingResult = trackingResult
+        uiView.skeletonOverlay.isHidden = !debugOverlayVisible
+        if let update = detectionUpdate {
+            uiView.skeletonOverlay.trackingResult = update.trackingResult
+            uiView.skeletonOverlay.stateMachineDebug = update.stateMachineDebug
+            uiView.skeletonOverlay.captureFPS = update.captureFPS
+            if update.detectionFlash {
+                uiView.skeletonOverlay.detectionFlash = true
+            }
+        }
         uiView.skeletonOverlay.previewLayer = uiView.previewLayer
     }
 }

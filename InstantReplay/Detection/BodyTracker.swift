@@ -25,7 +25,7 @@ final class BodyTracker: Sendable {
     private let historyLength: Int = 5
     private let velocityWindow: Int = 3
 
-    func update(with observations: [BodyObservation]) -> BodyTrackingResult {
+    func update(with observations: [BodyObservation], poseInterval: Double) -> BodyTrackingResult {
         var newCentroids: [(index: Int, centroid: CGPoint, observation: BodyObservation)] = []
         for (i, obs) in observations.enumerated() {
             newCentroids.append((index: i, centroid: obs.torsoCentroid, observation: obs))
@@ -89,8 +89,6 @@ final class BodyTracker: Sendable {
         bodies.removeAll { $0.age > maxAge }
 
         // Compute velocities and build results
-        let poseInterval = 1.0 / (CaptureConstants.captureFPS / Double(CaptureConstants.poseSubsamplingRate))
-
         var trackedBodies: [TrackedBody] = []
         for body in bodies {
             let hVel: CGFloat
