@@ -3,6 +3,7 @@ import AVFoundation
 @Observable
 final class CameraManager: NSObject {
     nonisolated(unsafe) let captureSession = AVCaptureSession()
+    let rollingBuffer = RollingBufferManager()
     private let sessionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.camera", qos: .userInitiated)
 
     private var isConfigured = false
@@ -36,7 +37,7 @@ final class CameraManager: NSObject {
             return
         }
 
-        // Add video data output with delegate wired up for future use
+        // Add video data output with delegate wired up
         let videoOutput = AVCaptureVideoDataOutput()
         videoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
         if captureSession.canAddOutput(videoOutput) {
@@ -93,7 +94,13 @@ final class CameraManager: NSObject {
             if self.captureSession.isRunning {
                 self.captureSession.stopRunning()
             }
+            self.rollingBuffer.stop()
         }
+    }
+
+    func resetForForeground() {
+        rollingBuffer.reset()
+        isConfigured = false
     }
 }
 
@@ -103,6 +110,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        // No-op — Phase 2 will process frames here
+        // Forward every frame to the rolling buffer for disk recording
+        rollingBuffer.append(sampleBuffer)
     }
 }

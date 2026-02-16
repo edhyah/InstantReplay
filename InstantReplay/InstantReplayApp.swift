@@ -14,6 +14,7 @@ struct InstantReplayApp: App {
             case .background:
                 cameraManager.stop()
             case .active:
+                cameraManager.resetForForeground()
                 cameraManager.configure()
                 cameraManager.start()
             default:
