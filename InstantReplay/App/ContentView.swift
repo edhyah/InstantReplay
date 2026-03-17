@@ -1,5 +1,11 @@
 import AVFoundation
+import PhotosUI
 import SwiftUI
+
+enum InputMode {
+    case camera
+    case video
+}
 
 struct ContentView: View {
     let cameraManager: CameraManager
@@ -11,30 +17,56 @@ struct ContentView: View {
     @State private var controlsVisible: Bool = false
     @Environment(\.scenePhase) private var scenePhase
 
+    // Video input mode
+    @State private var inputMode: InputMode = .camera
+    @State private var videoProcessor = VideoFileProcessor()
+    @State private var showingVideoPicker: Bool = false
+    @State private var videoLoaded: Bool = false
+
     var body: some View {
         ZStack {
-            // Camera preview is always present (behind replay when replaying)
-            CameraPreviewView(
-                cameraManager: cameraManager,
-                detectionUpdate: detectionUpdate,
-                debugOverlayVisible: debugOverlayVisible && !showingReplay
-            )
-            .ignoresSafeArea()
+            // Input layer: Camera or Video
+            if inputMode == .camera {
+                CameraPreviewView(
+                    cameraManager: cameraManager,
+                    detectionUpdate: detectionUpdate,
+                    debugOverlayVisible: debugOverlayVisible && !showingReplay
+                )
+                .ignoresSafeArea()
+            } else {
+                VideoPreviewView(
+                    videoProcessor: videoProcessor,
+                    detectionUpdate: detectionUpdate,
+                    debugOverlayVisible: debugOverlayVisible
+                )
+                .ignoresSafeArea()
+            }
 
-            // Replay layer on top when showing replay
-            if showingReplay {
+            // Replay layer on top when showing replay (camera mode only)
+            if showingReplay && inputMode == .camera {
                 ReplayPlayerView(replayManager: replayManager)
                     .ignoresSafeArea()
             }
 
-            // Playback controls overlay (only when replay is available)
-            if replayAvailable {
+            // Playback controls overlay (only when replay is available, camera mode only)
+            if replayAvailable && inputMode == .camera {
                 PlaybackControlsView(
                     replayManager: replayManager,
                     showingReplay: $showingReplay,
                     visible: $controlsVisible
                 )
                 .ignoresSafeArea()
+            }
+
+            // Mode toggle button (upper right)
+            VStack {
+                HStack {
+                    Spacer()
+                    modeToggleButton
+                        .padding(.trailing, 20)
+                        .padding(.top, 20)
+                }
+                Spacer()
             }
         }
         .persistentSystemOverlays(.hidden)
@@ -46,6 +78,7 @@ struct ContentView: View {
         }
         .onDisappear {
             cameraManager.stop()
+            videoProcessor.stop()
             replayManager.stop()
         }
         .onChange(of: showingReplay) { _, showing in
@@ -65,6 +98,48 @@ struct ContentView: View {
                 cameraManager.rollingBuffer.clearReplayReference()
             }
         }
+        .sheet(isPresented: $showingVideoPicker) {
+            VideoPickerView { url in
+                loadVideo(url: url)
+            }
+        }
+    }
+
+    private var modeToggleButton: some View {
+        Button(action: toggleMode) {
+            Image(systemName: inputMode == .camera ? "folder.badge.plus" : "xmark.circle.fill")
+                .font(.title2)
+                .foregroundColor(.white)
+                .padding(12)
+                .background(Color.black.opacity(0.6))
+                .clipShape(Circle())
+        }
+    }
+
+    private func toggleMode() {
+        if inputMode == .camera {
+            // Switch to video mode
+            cameraManager.stop()
+            showingVideoPicker = true
+        } else {
+            // Switch back to camera mode
+            videoProcessor.stop()
+            videoLoaded = false
+            inputMode = .camera
+            detectionUpdate = nil
+            requestCameraAccess()
+        }
+    }
+
+    private func loadVideo(url: URL) {
+        videoProcessor.loadVideo(url: url) { success in
+            if success {
+                inputMode = .video
+                videoLoaded = true
+                setupVideoDetectionCallback()
+                videoProcessor.start()
+            }
+        }
     }
 
     private func setupDetectionCallback() {
@@ -72,6 +147,22 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 self.detectionUpdate = update
             }
+        }
+    }
+
+    private func setupVideoDetectionCallback() {
+        videoProcessor.onDetectionUpdate = { update in
+            DispatchQueue.main.async {
+                self.detectionUpdate = update
+            }
+        }
+
+        videoProcessor.onMovementDetected = { event in
+            print("[Video] Movement detected at timestamp=\(event.landingTimestamp.seconds)")
+        }
+
+        videoProcessor.onPlaybackComplete = {
+            print("[Video] Playback complete")
         }
     }
 
@@ -127,6 +218,63 @@ struct ContentView: View {
             if granted {
                 cameraManager.configure()
                 cameraManager.start()
+            }
+        }
+    }
+}
+
+// MARK: - Video Picker
+
+struct VideoPickerView: UIViewControllerRepresentable {
+    let onVideoSelected: (URL) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration()
+        config.filter = .videos
+        config.selectionLimit = 1
+
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let parent: VideoPickerView
+
+        init(_ parent: VideoPickerView) {
+            self.parent = parent
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            parent.dismiss()
+
+            guard let result = results.first else { return }
+
+            if result.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
+                result.itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+                    guard let url = url else { return }
+
+                    // Copy to a temporary location since the provided URL is temporary
+                    let tempURL = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString)
+                        .appendingPathExtension(url.pathExtension)
+
+                    do {
+                        try FileManager.default.copyItem(at: url, to: tempURL)
+                        DispatchQueue.main.async {
+                            self.parent.onVideoSelected(tempURL)
+                        }
+                    } catch {
+                        print("[VideoPicker] Failed to copy video: \(error)")
+                    }
+                }
             }
         }
     }

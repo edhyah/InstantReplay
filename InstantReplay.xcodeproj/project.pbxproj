@@ -395,6 +395,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "InstantReplay needs camera access to record and replay your movements.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "InstantReplay needs photo library access to load videos for testing pose detection.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -429,6 +430,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "InstantReplay needs camera access to record and replay your movements.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "InstantReplay needs photo library access to load videos for testing pose detection.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

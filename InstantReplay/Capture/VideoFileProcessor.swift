@@ -1,0 +1,216 @@
+import AVFoundation
+import CoreMedia
+import CoreVideo
+
+@Observable
+final class VideoFileProcessor: NSObject {
+    let detectionPipeline = DetectionPipeline()
+
+    nonisolated(unsafe) var onDetectionUpdate: (@Sendable (DetectionUpdate) -> Void)?
+    nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
+    nonisolated(unsafe) var onFrameReady: ((CVPixelBuffer) -> Void)?
+    nonisolated(unsafe) var onPlaybackComplete: (() -> Void)?
+
+    private(set) var isPlaying: Bool = false
+    private(set) var videoFrameRate: Float = 30.0
+    private(set) var measuredFPS: Double = 0
+
+    private var assetReader: AVAssetReader?
+    private var trackOutput: AVAssetReaderTrackOutput?
+    private var displayLink: CADisplayLink?
+    private var videoAsset: AVAsset?
+
+    private let processingQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.videoProcessing", qos: .userInitiated)
+    private let detectionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.videoDetection", qos: .userInitiated)
+
+    private var frameCounter: Int = 0
+    private var lastFrameTime: CFTimeInterval = 0
+    private var fpsWindowStartTime: CFTimeInterval = 0
+    private var fpsWindowFrameCount: Int = 0
+
+    // Calculate subsampling rate based on video frame rate to achieve ~15fps detection
+    private var poseSubsamplingRate: Int {
+        max(1, Int(round(Double(videoFrameRate) / 15.0)))
+    }
+
+    func loadVideo(url: URL, completion: @escaping (Bool) -> Void) {
+        let asset = AVAsset(url: url)
+
+        Task {
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let videoTrack = tracks.first else {
+                    await MainActor.run { completion(false) }
+                    return
+                }
+
+                let frameRate = try await videoTrack.load(.nominalFrameRate)
+
+                await MainActor.run {
+                    self.videoAsset = asset
+                    self.videoFrameRate = frameRate
+                    completion(true)
+                }
+            } catch {
+                await MainActor.run { completion(false) }
+            }
+        }
+    }
+
+    func start() {
+        guard let asset = videoAsset else { return }
+
+        processingQueue.async { [weak self] in
+            self?.setupReader(for: asset)
+
+            DispatchQueue.main.async {
+                self?.isPlaying = true
+                self?.startDisplayLink()
+            }
+        }
+    }
+
+    func stop() {
+        isPlaying = false
+        displayLink?.invalidate()
+        displayLink = nil
+
+        processingQueue.async { [weak self] in
+            self?.assetReader?.cancelReading()
+            self?.assetReader = nil
+            self?.trackOutput = nil
+        }
+
+        detectionPipeline.reset()
+        frameCounter = 0
+        fpsWindowStartTime = 0
+        fpsWindowFrameCount = 0
+        measuredFPS = 0
+    }
+
+    func reset() {
+        stop()
+        videoAsset = nil
+    }
+
+    private func setupReader(for asset: AVAsset) {
+        Task {
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let videoTrack = tracks.first else { return }
+
+                let reader = try AVAssetReader(asset: asset)
+
+                let outputSettings: [String: Any] = [
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+                ]
+
+                let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: outputSettings)
+                output.alwaysCopiesSampleData = false
+
+                if reader.canAdd(output) {
+                    reader.add(output)
+                }
+
+                reader.startReading()
+
+                await MainActor.run {
+                    self.assetReader = reader
+                    self.trackOutput = output
+                }
+            } catch {
+                print("[VideoFileProcessor] Failed to setup reader: \(error)")
+            }
+        }
+    }
+
+    private func startDisplayLink() {
+        displayLink?.invalidate()
+
+        let link = CADisplayLink(target: self, selector: #selector(displayLinkFired))
+        // Limit to video's frame rate
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: Float(videoFrameRate), preferred: Float(videoFrameRate))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        lastFrameTime = CACurrentMediaTime()
+    }
+
+    @objc private func displayLinkFired(_ link: CADisplayLink) {
+        guard isPlaying else { return }
+
+        processingQueue.async { [weak self] in
+            self?.processNextFrame()
+        }
+    }
+
+    private func processNextFrame() {
+        guard let output = trackOutput,
+              let reader = assetReader,
+              reader.status == .reading else {
+            DispatchQueue.main.async { [weak self] in
+                self?.handlePlaybackComplete()
+            }
+            return
+        }
+
+        guard let sampleBuffer = output.copyNextSampleBuffer() else {
+            DispatchQueue.main.async { [weak self] in
+                self?.handlePlaybackComplete()
+            }
+            return
+        }
+
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+        // Update FPS measurement
+        let now = CACurrentMediaTime()
+        fpsWindowFrameCount += 1
+        let windowElapsed = now - fpsWindowStartTime
+        if windowElapsed >= 1.0 {
+            let fps = Double(fpsWindowFrameCount) / windowElapsed
+            DispatchQueue.main.async { [weak self] in
+                self?.measuredFPS = fps
+            }
+            fpsWindowFrameCount = 0
+            fpsWindowStartTime = now
+        }
+
+        // Notify frame for display
+        DispatchQueue.main.async { [weak self] in
+            self?.onFrameReady?(pixelBuffer)
+        }
+
+        // Subsample for pose detection
+        frameCounter += 1
+        if frameCounter % poseSubsamplingRate == 0 {
+            detectionQueue.async { [weak self] in
+                guard let self = self else { return }
+
+                self.detectionPipeline.onMovementDetected = { [weak self] event in
+                    self?.onMovementDetected?(event)
+                }
+
+                self.detectionPipeline.onDetectionResult = { [weak self] result in
+                    guard let self = self else { return }
+                    let update = DetectionUpdate(
+                        trackingResult: result.trackingResult,
+                        stateMachineDebug: result.stateMachineDebug,
+                        detectionFlash: result.didDetectMovement,
+                        captureFPS: self.measuredFPS
+                    )
+                    self.onDetectionUpdate?(update)
+                }
+
+                self.detectionPipeline.processFrame(pixelBuffer, timestamp: timestamp)
+            }
+        }
+    }
+
+    private func handlePlaybackComplete() {
+        isPlaying = false
+        displayLink?.invalidate()
+        displayLink = nil
+        onPlaybackComplete?()
+    }
+}
