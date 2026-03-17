@@ -47,11 +47,15 @@ final class ReplayDetectionRunner {
         "landing": 0.2
     ]
 
-    func run(reader: PoseReplayReader, groundTruth: GroundTruth?) -> ReplayDetectionResult {
+    func run(
+        reader: PoseReplayReader,
+        groundTruth: GroundTruth?,
+        thresholds: StateMachineThresholds = StateMachineThresholds()
+    ) -> ReplayDetectionResult {
         print("DEBUG Runner: Starting run with \(reader.frameCount) frames")
         let mockTime = MockTimeProvider()
         let bodyTracker = BodyTracker()
-        let stateMachine = ApproachDetectorStateMachine(timeProvider: mockTime)
+        let stateMachine = ApproachDetectorStateMachine(timeProvider: mockTime, thresholds: thresholds)
         print("DEBUG Runner: Created state machine")
 
         var detected = DetectedEvents()

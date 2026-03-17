@@ -9,14 +9,32 @@ enum ApproachState: String, Sendable {
     case descending = "DESCENDING"
 }
 
-struct StateMachineThresholds: Sendable {
-    let approachHorizontalVelocity: CGFloat = 0.20
-    let approachSustainedFrames: Int = 4
-    let approachMinDuration: TimeInterval = 0.3
-    let ascendingVerticalVelocity: CGFloat = -0.25 // negative = upward in top-left origin coords
-    let descendingVerticalVelocity: CGFloat = 0.10 // positive = downward
-    let landingVerticalMagnitude: CGFloat = 0.08
-    let timeoutDuration: TimeInterval = 3.0
+struct StateMachineThresholds: Sendable, Equatable {
+    let approachHorizontalVelocity: CGFloat
+    let approachSustainedFrames: Int
+    let approachMinDuration: TimeInterval
+    let ascendingVerticalVelocity: CGFloat // negative = upward in top-left origin coords
+    let descendingVerticalVelocity: CGFloat // positive = downward
+    let landingVerticalMagnitude: CGFloat
+    let timeoutDuration: TimeInterval
+
+    init(
+        approachHorizontalVelocity: CGFloat = 0.28,
+        approachSustainedFrames: Int = 2,
+        approachMinDuration: TimeInterval = 0.3,
+        ascendingVerticalVelocity: CGFloat = -0.15,
+        descendingVerticalVelocity: CGFloat = 0.15,
+        landingVerticalMagnitude: CGFloat = 0.16,
+        timeoutDuration: TimeInterval = 3.0
+    ) {
+        self.approachHorizontalVelocity = approachHorizontalVelocity
+        self.approachSustainedFrames = approachSustainedFrames
+        self.approachMinDuration = approachMinDuration
+        self.ascendingVerticalVelocity = ascendingVerticalVelocity
+        self.descendingVerticalVelocity = descendingVerticalVelocity
+        self.landingVerticalMagnitude = landingVerticalMagnitude
+        self.timeoutDuration = timeoutDuration
+    }
 }
 
 struct StateMachineDebugInfo: Sendable {
@@ -27,7 +45,7 @@ struct StateMachineDebugInfo: Sendable {
 }
 
 final class ApproachDetectorStateMachine: Sendable {
-    let thresholds = StateMachineThresholds()
+    let thresholds: StateMachineThresholds
     private let timeProvider: TimeProvider
 
     private nonisolated(unsafe) var state: ApproachState = .idle
@@ -40,8 +58,9 @@ final class ApproachDetectorStateMachine: Sendable {
     nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
     nonisolated(unsafe) var onStateTransition: ((ApproachState, CFTimeInterval) -> Void)?
 
-    init(timeProvider: TimeProvider = SystemTimeProvider()) {
+    init(timeProvider: TimeProvider = SystemTimeProvider(), thresholds: StateMachineThresholds = StateMachineThresholds()) {
         self.timeProvider = timeProvider
+        self.thresholds = thresholds
     }
 
     func step(dominantMover: TrackedBody?, timestamp: CMTime) -> StateMachineDebugInfo {
@@ -90,7 +109,7 @@ final class ApproachDetectorStateMachine: Sendable {
             // Check for vertical takeoff: upward = negative vertical velocity in top-left coords
             let timeInApproaching = now - stateEntryTime
             if timeInApproaching >= thresholds.approachMinDuration
-                && vVel < -thresholds.ascendingVerticalVelocity // going up (negative)
+                && vVel < thresholds.ascendingVerticalVelocity // going up (negative), threshold is negative
                 && absHVel > 0 {
                 transition(to: .ascending, now: now)
             }
@@ -107,7 +126,8 @@ final class ApproachDetectorStateMachine: Sendable {
             if abs(vVel) < thresholds.landingVerticalMagnitude {
                 // Emit landing event
                 onMovementDetected?(MovementDetectionEvent(landingTimestamp: timestamp))
-                resetToIdle(now: now)
+                transition(to: .idle, now: now)
+                approachFrameCount = 0
             }
         }
 
