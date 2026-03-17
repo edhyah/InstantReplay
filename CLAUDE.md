@@ -1,5 +1,27 @@
 # InstantReplay — Developer Notes
 
+## Test Targets
+
+### InstantReplayTests (iOS, requires device)
+
+Runs on a real iOS device. Contains **PoseCaptureTests** which captures pose data from videos and saves `.poses.json` files for offline algorithm testing.
+
+Workflow: Run `PoseCaptureTests` on device once to generate pose data, then copy output files to `InstantReplayMacTests/Resources/` for fast iteration.
+
+### InstantReplayMacTests (macOS, no simulator)
+
+Runs natively on Mac in ~1 second (vs 2-3+ minutes with iOS simulator). Used for fast iteration on detection algorithms.
+
+```bash
+xcodebuild test -scheme InstantReplayMacTests -destination 'platform=macOS'
+```
+
+**Architecture:** Contains duplicated copies of detection code (`Shared/`) and test utilities (`Utilities/`) without iOS dependencies. When algorithm changes are finalized, sync them back to `InstantReplay/Detection/`.
+
+**Resources:** Place `.poses.json` and ground truth `.json` files in `Resources/`. Tests auto-discover all pose files in this directory.
+
+---
+
 ### Dominant mover color flickers during idle
 
 The dominant mover (cyan skeleton) is recomputed every pose frame based on who currently has the highest absolute horizontal velocity. When the main athlete is standing still between reps, any small movement from another person (setter repositioning, someone walking) takes over the highlight. This is expected and harmless — the state machine (Phase 5) only triggers on sustained approach sequences, not momentary velocity spikes.

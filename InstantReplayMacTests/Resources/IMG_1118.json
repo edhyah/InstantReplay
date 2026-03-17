@@ -1,0 +1,16 @@
+{
+    "approaches": [
+        {
+            "approachStart": 2.01,
+            "takeoff": 3.03,
+            "peak": 3.41,
+            "landing": 3.8
+        },
+        {
+            "approachStart": 12.06,
+            "takeoff": 13.21,
+            "peak": 13.61,
+            "landing": 13.97
+        }
+    ]
+}

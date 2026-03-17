@@ -28,6 +28,7 @@ struct StateMachineDebugInfo: Sendable {
 
 final class ApproachDetectorStateMachine: Sendable {
     let thresholds = StateMachineThresholds()
+    private let timeProvider: TimeProvider
 
     private nonisolated(unsafe) var state: ApproachState = .idle
     private nonisolated(unsafe) var stateEntryTime: CFTimeInterval = 0
@@ -37,9 +38,14 @@ final class ApproachDetectorStateMachine: Sendable {
     private nonisolated(unsafe) var poseStartTime: CFTimeInterval = 0
 
     nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
+    nonisolated(unsafe) var onStateTransition: ((ApproachState, CFTimeInterval) -> Void)?
+
+    init(timeProvider: TimeProvider = SystemTimeProvider()) {
+        self.timeProvider = timeProvider
+    }
 
     func step(dominantMover: TrackedBody?, timestamp: CMTime) -> StateMachineDebugInfo {
-        let now = CACurrentMediaTime()
+        let now = timeProvider.currentTime()
 
         // Track pose FPS
         if poseStartTime == 0 {
@@ -122,6 +128,7 @@ final class ApproachDetectorStateMachine: Sendable {
     private func transition(to newState: ApproachState, now: CFTimeInterval) {
         state = newState
         stateEntryTime = now
+        onStateTransition?(newState, now)
     }
 
     private func resetToIdle(now: CFTimeInterval) {

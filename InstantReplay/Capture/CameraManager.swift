@@ -11,9 +11,7 @@ struct DetectionUpdate: Sendable {
 final class CameraManager: NSObject {
     nonisolated(unsafe) let captureSession = AVCaptureSession()
     let rollingBuffer = RollingBufferManager()
-    let poseEstimator = PoseEstimator()
-    let bodyTracker = BodyTracker()
-    let stateMachine = ApproachDetectorStateMachine()
+    let detectionPipeline = DetectionPipeline()
     private let sessionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.camera", qos: .userInitiated)
     private let detectionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.detection", qos: .userInitiated)
 
@@ -22,7 +20,6 @@ final class CameraManager: NSObject {
 
     private var isConfigured = false
     private nonisolated(unsafe) var frameCounter: Int = 0
-    private nonisolated(unsafe) var lastPoseTimestamp: CFTimeInterval = 0
     private nonisolated(unsafe) var captureWindowFrameCount: Int = 0
     private nonisolated(unsafe) var captureWindowStartTime: CFTimeInterval = 0
     private nonisolated(unsafe) var measuredCaptureFPS: Double = 0
@@ -119,10 +116,8 @@ final class CameraManager: NSObject {
 
     func resetForForeground() {
         rollingBuffer.reset()
-        bodyTracker.reset()
-        stateMachine.reset()
+        detectionPipeline.reset()
         frameCounter = 0
-        lastPoseTimestamp = 0
         captureWindowFrameCount = 0
         captureWindowStartTime = 0
         measuredCaptureFPS = 0
@@ -156,41 +151,21 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             nonisolated(unsafe) let buffer = pixelBuffer
             detectionQueue.async { [self] in
-                let now = CACurrentMediaTime()
-                let measuredInterval: Double
-                if self.lastPoseTimestamp > 0 {
-                    measuredInterval = now - self.lastPoseTimestamp
-                } else {
-                    // First frame: use the expected interval from constants
-                    measuredInterval = 1.0 / (CaptureConstants.captureFPS / Double(CaptureConstants.poseSubsamplingRate))
-                }
-                self.lastPoseTimestamp = now
-
-                let observations = self.poseEstimator.estimatePoses(buffer)
-                let trackingResult = self.bodyTracker.update(with: observations, poseInterval: measuredInterval)
-
-                let dominantMover = trackingResult.trackedBodies.first {
-                    $0.id == trackingResult.dominantMoverID
-                }
-
-                var didDetect = false
-                self.stateMachine.onMovementDetected = { [self] event in
-                    didDetect = true
+                self.detectionPipeline.onMovementDetected = { [self] event in
                     self.onMovementDetected?(event)
                 }
 
-                let debugInfo = self.stateMachine.step(
-                    dominantMover: dominantMover,
-                    timestamp: timestamp
-                )
+                self.detectionPipeline.onDetectionResult = { [self] result in
+                    let update = DetectionUpdate(
+                        trackingResult: result.trackingResult,
+                        stateMachineDebug: result.stateMachineDebug,
+                        detectionFlash: result.didDetectMovement,
+                        captureFPS: self.measuredCaptureFPS
+                    )
+                    self.onDetectionUpdate?(update)
+                }
 
-                let update = DetectionUpdate(
-                    trackingResult: trackingResult,
-                    stateMachineDebug: debugInfo,
-                    detectionFlash: didDetect,
-                    captureFPS: self.measuredCaptureFPS
-                )
-                self.onDetectionUpdate?(update)
+                self.detectionPipeline.processFrame(buffer, timestamp: timestamp)
             }
         }
     }
