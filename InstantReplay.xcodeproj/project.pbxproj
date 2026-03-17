@@ -38,6 +38,11 @@
 			path = InstantReplayMacTests;
 			sourceTree = "<group>";
 		};
+		1ESHARED0012F430900007D5D53 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -68,6 +73,7 @@
 		1E10D2292F430684007D5D53 = {
 			isa = PBXGroup;
 			children = (
+				1ESHARED0012F430900007D5D53 /* Shared */,
 				1E10D2342F430684007D5D53 /* InstantReplay */,
 				1E10D24D2F430700007D5D53 /* InstantReplayTests */,
 				1EMAC00022F430800007D5D53 /* InstantReplayMacTests */,
@@ -102,6 +108,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				1E10D2342F430684007D5D53 /* InstantReplay */,
+				1ESHARED0012F430900007D5D53 /* Shared */,
 			);
 			name = InstantReplay;
 			packageProductDependencies = (
@@ -147,6 +154,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				1EMAC00022F430800007D5D53 /* InstantReplayMacTests */,
+				1ESHARED0012F430900007D5D53 /* Shared */,
 			);
 			name = InstantReplayMacTests;
 			packageProductDependencies = (

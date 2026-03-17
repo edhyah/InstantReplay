@@ -16,9 +16,21 @@ Runs natively on Mac in ~1 second (vs 2-3+ minutes with iOS simulator). Used for
 xcodebuild test -scheme InstantReplayMacTests -destination 'platform=macOS'
 ```
 
-**Architecture:** Contains duplicated copies of detection code (`Shared/`) and test utilities (`Utilities/`) without iOS dependencies. When algorithm changes are finalized, sync them back to `InstantReplay/Detection/`.
-
 **Resources:** Place `.poses.json` and ground truth `.json` files in `Resources/`. Tests auto-discover all pose files in this directory.
+
+## Shared Code Architecture
+
+Detection algorithm code lives in `/Shared/Detection/` and is compiled into both iOS and Mac test targets:
+
+- `ApproachDetectorStateMachine.swift` - State machine for detecting approach/jump sequences
+- `BodyTracker.swift` - Tracks bodies across frames using centroid matching
+- `DetectionTypes.swift` - Shared type definitions
+- `MovementDetector.swift` - Movement detection utilities
+- `TimeProvider.swift` - Protocol for injecting time (real or mock)
+
+iOS-only files remain in `InstantReplay/Detection/`:
+- `PoseEstimator.swift` - Vision framework integration for real-time pose detection
+- `DetectionPipeline.swift` - Orchestrates the iOS camera/detection pipeline
 
 ---
 
