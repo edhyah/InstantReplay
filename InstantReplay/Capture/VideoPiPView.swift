@@ -2,32 +2,19 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-struct VideoPreviewView: UIViewRepresentable {
+struct VideoPiPView: UIViewRepresentable {
     let videoProcessor: VideoFileProcessor
-    let detectionUpdate: DetectionUpdate?
-    let debugOverlayVisible: Bool
 
-    func makeUIView(context: Context) -> VideoContainerView {
-        let view = VideoContainerView()
+    func makeUIView(context: Context) -> VideoPiPContainerView {
+        let view = VideoPiPContainerView()
         view.videoProcessor = videoProcessor
         return view
     }
 
-    func updateUIView(_ uiView: VideoContainerView, context: Context) {
-        uiView.skeletonOverlay.isHidden = !debugOverlayVisible
-        if let update = detectionUpdate {
-            uiView.skeletonOverlay.trackingResult = update.trackingResult
-            uiView.skeletonOverlay.stateMachineDebug = update.stateMachineDebug
-            uiView.skeletonOverlay.captureFPS = update.captureFPS
-            if update.detectionFlash {
-                uiView.skeletonOverlay.detectionFlash = true
-            }
-        }
-    }
+    func updateUIView(_ uiView: VideoPiPContainerView, context: Context) {}
 }
 
-class VideoContainerView: UIView {
-    let skeletonOverlay = SkeletonOverlayView()
+class VideoPiPContainerView: UIView {
     private let frameImageView = UIImageView()
     private var ciContext = CIContext()
 
@@ -53,16 +40,11 @@ class VideoContainerView: UIView {
         frameImageView.contentMode = .scaleAspectFill
         frameImageView.clipsToBounds = true
         addSubview(frameImageView)
-
-        // Configure skeleton overlay to use simple coordinate conversion (no previewLayer)
-        skeletonOverlay.previewLayer = nil
-        addSubview(skeletonOverlay)
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         frameImageView.frame = bounds
-        skeletonOverlay.frame = bounds
     }
 
     private func setupFrameCallback() {

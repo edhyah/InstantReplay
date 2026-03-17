@@ -2,7 +2,12 @@ import SwiftUI
 
 struct PlaybackControlsView: View {
     let replayManager: ReplayManager
+    let cameraManager: CameraManager
+    let inputMode: InputMode
+    let videoProcessor: VideoFileProcessor?
+    let onImportTapped: () -> Void
     @Binding var showingReplay: Bool
+    let replayAvailable: Bool
     @Binding var visible: Bool
     @State private var autoHideTask: Task<Void, Never>?
     @State private var isScrubbing: Bool = false
@@ -26,15 +31,41 @@ struct PlaybackControlsView: View {
                     }
                 }
 
-            // Always visible: LIVE button top-right
-            VStack {
-                HStack {
-                    Spacer()
-                    liveButton
+            // PiP in top-right (during replay or initial black screen)
+            if showingReplay || !replayAvailable {
+                VStack {
+                    HStack {
+                        Spacer()
+                        VStack(spacing: 12) {
+                            // PiP - camera or video depending on mode
+                            pipView
+                                .onTapGesture {
+                                    if replayAvailable {
+                                        showingReplay = false
+                                    }
+                                }
+
+                            // Import button below PiP
+                            importButton
+                        }
                         .padding(.top, 16)
                         .padding(.trailing, 16)
+                    }
+                    Spacer()
                 }
-                Spacer()
+            }
+
+            // REPLAY button in top-right (when viewing live full screen)
+            if !showingReplay && replayAvailable {
+                VStack {
+                    HStack {
+                        Spacer()
+                        replayButton
+                            .padding(.top, 16)
+                            .padding(.trailing, 16)
+                    }
+                    Spacer()
+                }
             }
 
             // Always visible: recency label top-left (during replay)
@@ -212,26 +243,57 @@ struct PlaybackControlsView: View {
         }
     }
 
-    // MARK: - LIVE Button
+    // MARK: - PiP
 
-    private var liveButton: some View {
+    @ViewBuilder
+    private var pipView: some View {
+        Group {
+            if inputMode == .camera {
+                CameraPiPView(cameraManager: cameraManager)
+            } else if let videoProcessor = videoProcessor {
+                VideoPiPView(videoProcessor: videoProcessor)
+            }
+        }
+        .frame(width: 160, height: 120)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.3), lineWidth: 2)
+        )
+        .shadow(radius: 4)
+    }
+
+    // MARK: - Import Button
+
+    private var importButton: some View {
+        Button(action: onImportTapped) {
+            Image(systemName: inputMode == .camera ? "folder.badge.plus" : "xmark.circle.fill")
+                .font(.title2)
+                .foregroundColor(.white)
+                .padding(12)
+                .background(Color.black.opacity(0.6))
+                .clipShape(Circle())
+        }
+    }
+
+    // MARK: - Replay Button
+
+    private var replayButton: some View {
         Button {
-            showingReplay.toggle()
-            resetAutoHide()
+            showingReplay = true
         } label: {
             HStack(spacing: 6) {
-                Circle()
-                    .fill(showingReplay ? Color.white.opacity(0.5) : Color.red)
-                    .frame(width: 8, height: 8)
-                Text("LIVE")
+                Image(systemName: "play.rectangle.fill")
+                    .font(.system(size: 14))
+                Text("REPLAY")
                     .font(.system(size: 16, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white)
             }
+            .foregroundStyle(.white)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .background(
                 Capsule()
-                    .fill(showingReplay ? Color.white.opacity(0.2) : Color.red.opacity(0.6))
+                    .fill(Color.white.opacity(0.2))
             )
         }
     }

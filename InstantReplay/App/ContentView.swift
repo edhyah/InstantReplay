@@ -27,49 +27,49 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // Input layer: Camera or Video
-            if inputMode == .camera {
-                CameraPreviewView(
-                    cameraManager: cameraManager,
-                    detectionUpdate: detectionUpdate,
-                    debugOverlayVisible: debugOverlayVisible && !showingReplay
-                )
-                .ignoresSafeArea()
-            } else {
-                VideoPreviewView(
-                    videoProcessor: videoProcessor,
-                    detectionUpdate: detectionUpdate,
-                    debugOverlayVisible: debugOverlayVisible
-                )
-                .ignoresSafeArea()
+            // Black background for initial state (both modes, before detection)
+            if !replayAvailable {
+                Color.black
+                    .ignoresSafeArea()
             }
 
-            // Replay layer on top when showing replay (camera mode only)
-            if showingReplay && inputMode == .camera {
+            // Full-screen source view (when user taps PiP to return to source)
+            if !showingReplay && replayAvailable {
+                if inputMode == .camera {
+                    CameraPreviewView(
+                        cameraManager: cameraManager,
+                        detectionUpdate: detectionUpdate,
+                        debugOverlayVisible: debugOverlayVisible
+                    )
+                    .ignoresSafeArea()
+                } else {
+                    VideoPreviewView(
+                        videoProcessor: videoProcessor,
+                        detectionUpdate: detectionUpdate,
+                        debugOverlayVisible: debugOverlayVisible
+                    )
+                    .ignoresSafeArea()
+                }
+            }
+
+            // Detection/Replay layer on top when showing replay (both modes use ReplayPlayerView)
+            if showingReplay {
                 ReplayPlayerView(replayManager: replayManager)
                     .ignoresSafeArea()
             }
 
-            // Playback controls overlay (only when replay is available, camera mode only)
-            if replayAvailable && inputMode == .camera {
-                PlaybackControlsView(
-                    replayManager: replayManager,
-                    showingReplay: $showingReplay,
-                    visible: $controlsVisible
-                )
-                .ignoresSafeArea()
-            }
-
-            // Mode toggle button (upper right)
-            VStack {
-                HStack {
-                    Spacer()
-                    modeToggleButton
-                        .padding(.trailing, 20)
-                        .padding(.top, 20)
-                }
-                Spacer()
-            }
+            // Playback controls overlay for BOTH modes (shows PiP + import button)
+            PlaybackControlsView(
+                replayManager: replayManager,
+                cameraManager: cameraManager,
+                inputMode: inputMode,
+                videoProcessor: inputMode == .video ? videoProcessor : nil,
+                onImportTapped: { toggleMode() },
+                showingReplay: $showingReplay,
+                replayAvailable: replayAvailable,
+                visible: $controlsVisible
+            )
+            .ignoresSafeArea()
 
             // Loading overlay for video import
             if isLoadingVideo {
@@ -144,17 +144,6 @@ struct ContentView: View {
         }
     }
 
-    private var modeToggleButton: some View {
-        Button(action: toggleMode) {
-            Image(systemName: inputMode == .camera ? "folder.badge.plus" : "xmark.circle.fill")
-                .font(.title2)
-                .foregroundColor(.white)
-                .padding(12)
-                .background(Color.black.opacity(0.6))
-                .clipShape(Circle())
-        }
-    }
-
     private func toggleMode() {
         if inputMode == .camera {
             // Switch to video mode
@@ -166,6 +155,8 @@ struct ContentView: View {
             videoLoaded = false
             inputMode = .camera
             detectionUpdate = nil
+            showingReplay = false
+            replayAvailable = false
             requestCameraAccess()
         }
     }
@@ -177,6 +168,8 @@ struct ContentView: View {
                 if success {
                     inputMode = .video
                     videoLoaded = true
+                    showingReplay = false
+                    replayAvailable = false
                     setupVideoDetectionCallback()
                     videoProcessor.start()
                 } else {
@@ -203,10 +196,21 @@ struct ContentView: View {
 
         videoProcessor.onMovementDetected = { event in
             print("[Video] Movement detected at timestamp=\(event.landingTimestamp.seconds)")
-        }
 
-        videoProcessor.onPlaybackComplete = {
-            print("[Video] Playback complete")
+            // Extract a clip around the detection timestamp
+            videoProcessor.extractClip(landingTimestamp: event.landingTimestamp) { clipAsset in
+                DispatchQueue.main.async {
+                    if let clip = clipAsset {
+                        print("[Video] clip extracted, duration=\(clip.timeRange.duration.seconds)")
+                        replayManager.playClip(clip)
+                        showingReplay = true
+                        replayAvailable = true
+                        controlsVisible = false
+                    } else {
+                        print("[Video] clip extraction returned nil")
+                    }
+                }
+            }
         }
     }
 

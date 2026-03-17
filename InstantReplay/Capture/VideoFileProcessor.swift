@@ -8,8 +8,17 @@ final class VideoFileProcessor: NSObject {
 
     nonisolated(unsafe) var onDetectionUpdate: (@Sendable (DetectionUpdate) -> Void)?
     nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
-    nonisolated(unsafe) var onFrameReady: ((CVPixelBuffer) -> Void)?
     nonisolated(unsafe) var onPlaybackComplete: (() -> Void)?
+
+    private var frameObservers: [ObjectIdentifier: (CVPixelBuffer) -> Void] = [:]
+
+    func addFrameObserver(_ observer: AnyObject, callback: @escaping (CVPixelBuffer) -> Void) {
+        frameObservers[ObjectIdentifier(observer)] = callback
+    }
+
+    func removeFrameObserver(_ observer: AnyObject) {
+        frameObservers.removeValue(forKey: ObjectIdentifier(observer))
+    }
 
     private(set) var isPlaying: Bool = false
     private(set) var videoFrameRate: Float = 30.0
@@ -19,6 +28,7 @@ final class VideoFileProcessor: NSObject {
     private var trackOutput: AVAssetReaderTrackOutput?
     private var displayLink: CADisplayLink?
     private var videoAsset: AVAsset?
+    private var currentVideoURL: URL?
 
     private let processingQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.videoProcessing", qos: .userInitiated)
     private let detectionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.videoDetection", qos: .userInitiated)
@@ -47,6 +57,7 @@ final class VideoFileProcessor: NSObject {
                 let frameRate = try await videoTrack.load(.nominalFrameRate)
 
                 await MainActor.run {
+                    self.currentVideoURL = url
                     self.videoAsset = asset
                     self.videoFrameRate = frameRate
                     completion(true)
@@ -91,6 +102,15 @@ final class VideoFileProcessor: NSObject {
     func reset() {
         stop()
         videoAsset = nil
+        currentVideoURL = nil
+    }
+
+    func restartPlayback() {
+        stop()
+        guard let url = currentVideoURL else { return }
+        let asset = AVAsset(url: url)
+        videoAsset = asset
+        start()
     }
 
     private func setupReader(for asset: AVAsset) {
@@ -176,9 +196,12 @@ final class VideoFileProcessor: NSObject {
             fpsWindowStartTime = now
         }
 
-        // Notify frame for display
+        // Notify all frame observers
         DispatchQueue.main.async { [weak self] in
-            self?.onFrameReady?(pixelBuffer)
+            guard let self = self else { return }
+            for callback in self.frameObservers.values {
+                callback(pixelBuffer)
+            }
         }
 
         // Subsample for pose detection
@@ -208,9 +231,66 @@ final class VideoFileProcessor: NSObject {
     }
 
     private func handlePlaybackComplete() {
-        isPlaying = false
-        displayLink?.invalidate()
-        displayLink = nil
-        onPlaybackComplete?()
+        // Loop the video by restarting playback
+        restartPlayback()
+    }
+
+    /// Extracts a clip around the landing timestamp from the video file.
+    func extractClip(landingTimestamp: CMTime, completion: @escaping (ClipAsset?) -> Void) {
+        guard let url = currentVideoURL else {
+            completion(nil)
+            return
+        }
+
+        let preRoll = CaptureConstants.clipPreRollDuration
+        let postRoll = CaptureConstants.clipPostRollDuration
+
+        let clipStart = CMTimeSubtract(landingTimestamp, CMTimeMakeWithSeconds(preRoll, preferredTimescale: landingTimestamp.timescale))
+        let clipEnd = CMTimeAdd(landingTimestamp, CMTimeMakeWithSeconds(postRoll, preferredTimescale: landingTimestamp.timescale))
+
+        // Clamp to valid range (start >= 0)
+        let clampedStart = CMTimeMaximum(clipStart, .zero)
+        let duration = CMTimeSubtract(clipEnd, clampedStart)
+
+        guard CMTimeGetSeconds(duration) >= 0.5 else {
+            print("[VideoFileProcessor] clip too short, returning nil")
+            completion(nil)
+            return
+        }
+
+        let asset = AVURLAsset(url: url)
+        let composition = AVMutableComposition()
+
+        Task {
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let videoTrack = tracks.first else {
+                    await MainActor.run { completion(nil) }
+                    return
+                }
+
+                guard let compositionTrack = composition.addMutableTrack(
+                    withMediaType: .video,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                ) else {
+                    await MainActor.run { completion(nil) }
+                    return
+                }
+
+                let timeRange = CMTimeRangeMake(start: clampedStart, duration: duration)
+                try compositionTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
+
+                let clipAsset = ClipAsset(
+                    asset: composition,
+                    timeRange: CMTimeRangeMake(start: .zero, duration: duration),
+                    referencedURLs: [url]
+                )
+
+                await MainActor.run { completion(clipAsset) }
+            } catch {
+                print("[VideoFileProcessor] failed to extract clip: \(error)")
+                await MainActor.run { completion(nil) }
+            }
+        }
     }
 }
