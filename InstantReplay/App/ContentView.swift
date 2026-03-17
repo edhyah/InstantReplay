@@ -22,6 +22,8 @@ struct ContentView: View {
     @State private var videoProcessor = VideoFileProcessor()
     @State private var showingVideoPicker: Bool = false
     @State private var videoLoaded: Bool = false
+    @State private var isLoadingVideo: Bool = false
+    @State private var importError: String? = nil
 
     var body: some View {
         ZStack {
@@ -68,6 +70,21 @@ struct ContentView: View {
                 }
                 Spacer()
             }
+
+            // Loading overlay for video import
+            if isLoadingVideo {
+                Color.black.opacity(0.6)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.5)
+                    Text("Importing video...")
+                        .foregroundColor(.white)
+                        .font(.headline)
+                }
+            }
         }
         .persistentSystemOverlays(.hidden)
         .statusBarHidden()
@@ -99,9 +116,31 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingVideoPicker) {
-            VideoPickerView { url in
-                loadVideo(url: url)
+            VideoPickerView(
+                onVideoSelected: { url in
+                    loadVideo(url: url)
+                },
+                onLoadingStarted: {
+                    isLoadingVideo = true
+                },
+                onLoadingFailed: { error in
+                    isLoadingVideo = false
+                    if !error.isEmpty {
+                        importError = error
+                    } else {
+                        // User cancelled, return to camera
+                        requestCameraAccess()
+                    }
+                }
+            )
+        }
+        .alert("Import Failed", isPresented: .constant(importError != nil)) {
+            Button("OK") {
+                importError = nil
+                requestCameraAccess()
             }
+        } message: {
+            Text(importError ?? "")
         }
     }
 
@@ -133,11 +172,16 @@ struct ContentView: View {
 
     private func loadVideo(url: URL) {
         videoProcessor.loadVideo(url: url) { success in
-            if success {
-                inputMode = .video
-                videoLoaded = true
-                setupVideoDetectionCallback()
-                videoProcessor.start()
+            DispatchQueue.main.async {
+                isLoadingVideo = false
+                if success {
+                    inputMode = .video
+                    videoLoaded = true
+                    setupVideoDetectionCallback()
+                    videoProcessor.start()
+                } else {
+                    importError = "Failed to load video file."
+                }
             }
         }
     }
@@ -227,6 +271,8 @@ struct ContentView: View {
 
 struct VideoPickerView: UIViewControllerRepresentable {
     let onVideoSelected: (URL) -> Void
+    let onLoadingStarted: () -> Void
+    let onLoadingFailed: (String) -> Void
     @Environment(\.dismiss) private var dismiss
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
@@ -253,13 +299,36 @@ struct VideoPickerView: UIViewControllerRepresentable {
         }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            parent.dismiss()
+            guard let result = results.first else {
+                // User cancelled
+                parent.dismiss()
+                DispatchQueue.main.async {
+                    self.parent.onLoadingFailed("")
+                }
+                return
+            }
 
-            guard let result = results.first else { return }
+            // Dismiss picker and show loading indicator
+            parent.dismiss()
+            DispatchQueue.main.async {
+                self.parent.onLoadingStarted()
+            }
 
             if result.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
                 result.itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
-                    guard let url = url else { return }
+                    if let error = error {
+                        DispatchQueue.main.async {
+                            self.parent.onLoadingFailed("Failed to load video: \(error.localizedDescription)")
+                        }
+                        return
+                    }
+
+                    guard let url = url else {
+                        DispatchQueue.main.async {
+                            self.parent.onLoadingFailed("Failed to load video file.")
+                        }
+                        return
+                    }
 
                     // Copy to a temporary location since the provided URL is temporary
                     let tempURL = FileManager.default.temporaryDirectory
@@ -272,8 +341,14 @@ struct VideoPickerView: UIViewControllerRepresentable {
                             self.parent.onVideoSelected(tempURL)
                         }
                     } catch {
-                        print("[VideoPicker] Failed to copy video: \(error)")
+                        DispatchQueue.main.async {
+                            self.parent.onLoadingFailed("Failed to copy video: \(error.localizedDescription)")
+                        }
                     }
+                }
+            } else {
+                DispatchQueue.main.async {
+                    self.parent.onLoadingFailed("Selected file is not a video.")
                 }
             }
         }
