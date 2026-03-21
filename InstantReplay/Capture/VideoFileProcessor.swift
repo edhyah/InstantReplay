@@ -71,14 +71,7 @@ final class VideoFileProcessor: NSObject {
     func start() {
         guard let asset = videoAsset else { return }
 
-        processingQueue.async { [weak self] in
-            self?.setupReader(for: asset)
-
-            DispatchQueue.main.async {
-                self?.isPlaying = true
-                self?.startDisplayLink()
-            }
-        }
+        setupReader(for: asset)
     }
 
     func stop() {
@@ -137,6 +130,8 @@ final class VideoFileProcessor: NSObject {
                 await MainActor.run {
                     self.assetReader = reader
                     self.trackOutput = output
+                    self.isPlaying = true
+                    self.startDisplayLink()
                 }
             } catch {
                 print("[VideoFileProcessor] Failed to setup reader: \(error)")
@@ -158,6 +153,15 @@ final class VideoFileProcessor: NSObject {
     @objc private func displayLinkFired(_ link: CADisplayLink) {
         guard isPlaying else { return }
 
+        // Pace frame reading to match the video's native frame rate.
+        // preferredFrameRateRange is advisory and may not be respected on
+        // ProMotion displays, so enforce the rate here to prevent consuming
+        // frames faster than real-time.
+        let now = CACurrentMediaTime()
+        let minInterval = 1.0 / Double(max(1, videoFrameRate))
+        guard now - lastFrameTime >= minInterval * 0.8 else { return }
+        lastFrameTime = now
+
         processingQueue.async { [weak self] in
             self?.processNextFrame()
         }
@@ -165,8 +169,11 @@ final class VideoFileProcessor: NSObject {
 
     private func processNextFrame() {
         guard let output = trackOutput,
-              let reader = assetReader,
-              reader.status == .reading else {
+              let reader = assetReader else {
+            return // Reader not ready yet; wait for setupReader to complete
+        }
+
+        guard reader.status == .reading else {
             DispatchQueue.main.async { [weak self] in
                 self?.handlePlaybackComplete()
             }
