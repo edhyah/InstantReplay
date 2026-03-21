@@ -139,7 +139,7 @@ final class VideoFileProcessor: NSObject {
                     self.trackOutput = output
                 }
             } catch {
-                print("[VideoFileProcessor] Failed to setup reader: \(error)")
+                debugLog("[VideoFileProcessor] Failed to setup reader: \(error)")
             }
         }
     }
@@ -253,7 +253,7 @@ final class VideoFileProcessor: NSObject {
         let duration = CMTimeSubtract(clipEnd, clampedStart)
 
         guard CMTimeGetSeconds(duration) >= 0.5 else {
-            print("[VideoFileProcessor] clip too short, returning nil")
+            debugLog("[VideoFileProcessor] clip too short, returning nil")
             completion(nil)
             return
         }
@@ -288,7 +288,7 @@ final class VideoFileProcessor: NSObject {
 
                 await MainActor.run { completion(clipAsset) }
             } catch {
-                print("[VideoFileProcessor] failed to extract clip: \(error)")
+                debugLog("[VideoFileProcessor] failed to extract clip: \(error)")
                 await MainActor.run { completion(nil) }
             }
         }

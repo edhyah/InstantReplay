@@ -18,7 +18,7 @@ final class SegmentWriter: @unchecked Sendable {
         do {
             assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
         } catch {
-            print("[SegmentWriter] failed to create AVAssetWriter: \(error)")
+            debugLog("[SegmentWriter] failed to create AVAssetWriter: \(error)")
             return nil
         }
 
@@ -34,17 +34,17 @@ final class SegmentWriter: @unchecked Sendable {
         videoInput.expectsMediaDataInRealTime = true
 
         guard assetWriter.canAdd(videoInput) else {
-            print("[SegmentWriter] canAdd(videoInput) returned false")
+            debugLog("[SegmentWriter] canAdd(videoInput) returned false")
             return nil
         }
         assetWriter.add(videoInput)
 
         guard assetWriter.startWriting() else {
-            print("[SegmentWriter] startWriting failed: \(assetWriter.error?.localizedDescription ?? "unknown")")
+            debugLog("[SegmentWriter] startWriting failed: \(assetWriter.error?.localizedDescription ?? "unknown")")
             return nil
         }
         assetWriter.startSession(atSourceTime: startTimestamp)
-        print("[SegmentWriter] created \(outputURL.lastPathComponent), startTime=\(startTimestamp.seconds), dims=\(dimensions.width)x\(dimensions.height), status=\(assetWriter.status.rawValue)")
+        debugLog("[SegmentWriter] created \(outputURL.lastPathComponent), startTime=\(startTimestamp.seconds), dims=\(dimensions.width)x\(dimensions.height), status=\(assetWriter.status.rawValue)")
     }
 
     nonisolated func append(_ sampleBuffer: CMSampleBuffer) {
@@ -55,7 +55,7 @@ final class SegmentWriter: @unchecked Sendable {
         }
         guard assetWriter.status == .writing else {
             if frameCount == 0 || (frameCount > 0 && appendFailCount == 0) {
-                print("[SegmentWriter] \(fileURL.lastPathComponent): writer status=\(assetWriter.status.rawValue), error=\(assetWriter.error?.localizedDescription ?? "none"), frames=\(frameCount)")
+                debugLog("[SegmentWriter] \(fileURL.lastPathComponent): writer status=\(assetWriter.status.rawValue), error=\(assetWriter.error?.localizedDescription ?? "none"), frames=\(frameCount)")
             }
             appendFailCount += 1
             return
@@ -65,12 +65,12 @@ final class SegmentWriter: @unchecked Sendable {
             frameCount += 1
             if frameCount == 1 {
                 let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-                print("[SegmentWriter] \(fileURL.lastPathComponent): first frame appended, pts=\(pts.seconds)")
+                debugLog("[SegmentWriter] \(fileURL.lastPathComponent): first frame appended, pts=\(pts.seconds)")
             }
         } else {
             appendFailCount += 1
             if appendFailCount <= 3 {
-                print("[SegmentWriter] \(fileURL.lastPathComponent): append failed, status=\(assetWriter.status.rawValue), error=\(assetWriter.error?.localizedDescription ?? "none"), frames=\(frameCount)")
+                debugLog("[SegmentWriter] \(fileURL.lastPathComponent): append failed, status=\(assetWriter.status.rawValue), error=\(assetWriter.error?.localizedDescription ?? "none"), frames=\(frameCount)")
             }
         }
     }
@@ -82,9 +82,9 @@ final class SegmentWriter: @unchecked Sendable {
         }
         isFinalized = true
 
-        print("[SegmentWriter] finalizing \(fileURL.lastPathComponent): \(frameCount) frames written, \(appendFailCount) failed appends, status=\(assetWriter.status.rawValue)")
+        debugLog("[SegmentWriter] finalizing \(fileURL.lastPathComponent): \(frameCount) frames written, \(appendFailCount) failed appends, status=\(assetWriter.status.rawValue)")
         if assetWriter.status == .failed {
-            print("[SegmentWriter] writer already failed: \(assetWriter.error?.localizedDescription ?? "unknown")")
+            debugLog("[SegmentWriter] writer already failed: \(assetWriter.error?.localizedDescription ?? "unknown")")
             completion()
             return
         }
@@ -92,7 +92,7 @@ final class SegmentWriter: @unchecked Sendable {
         videoInput.markAsFinished()
         assetWriter.finishWriting { [self] in
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: self.fileURL.path)[.size] as? Int) ?? 0
-            print("[SegmentWriter] finalized \(self.fileURL.lastPathComponent): status=\(self.assetWriter.status.rawValue), error=\(self.assetWriter.error?.localizedDescription ?? "none"), fileSize=\(fileSize)")
+            debugLog("[SegmentWriter] finalized \(self.fileURL.lastPathComponent): status=\(self.assetWriter.status.rawValue), error=\(self.assetWriter.error?.localizedDescription ?? "none"), fileSize=\(fileSize)")
             completion()
         }
     }

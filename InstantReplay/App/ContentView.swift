@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var videoLoaded: Bool = false
     @State private var isLoadingVideo: Bool = false
     @State private var importError: String? = nil
+    @State private var showDebugConsole: Bool = false
 
     var body: some View {
         ZStack {
@@ -85,6 +86,16 @@ struct ContentView: View {
                         .font(.headline)
                 }
             }
+
+            // Debug console overlay
+            if showDebugConsole {
+                DebugConsoleView(isVisible: $showDebugConsole)
+                    .ignoresSafeArea()
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(count: 3) {
+            showDebugConsole.toggle()
         }
         .persistentSystemOverlays(.hidden)
         .statusBarHidden()
@@ -195,19 +206,19 @@ struct ContentView: View {
         }
 
         videoProcessor.onMovementDetected = { event in
-            print("[Video] Movement detected at timestamp=\(event.landingTimestamp.seconds)")
+            debugLog("[Video] Movement detected at timestamp=\(event.landingTimestamp.seconds)")
 
             // Extract a clip around the detection timestamp
             videoProcessor.extractClip(landingTimestamp: event.landingTimestamp) { clipAsset in
                 DispatchQueue.main.async {
                     if let clip = clipAsset {
-                        print("[Video] clip extracted, duration=\(clip.timeRange.duration.seconds)")
+                        debugLog("[Video] clip extracted, duration=\(clip.timeRange.duration.seconds)")
                         replayManager.playClip(clip)
                         showingReplay = true
                         replayAvailable = true
                         controlsVisible = false
                     } else {
-                        print("[Video] clip extraction returned nil")
+                        debugLog("[Video] clip extraction returned nil")
                     }
                 }
             }
@@ -218,18 +229,18 @@ struct ContentView: View {
         let extractor = ClipExtractor(rollingBuffer: cameraManager.rollingBuffer)
 
         cameraManager.onMovementDetected = { event in
-            print("[Replay] onMovementDetected fired, landingTimestamp=\(event.landingTimestamp.seconds)")
+            debugLog("[Replay] onMovementDetected fired, landingTimestamp=\(event.landingTimestamp.seconds)")
 
             let segments = cameraManager.rollingBuffer.segments
-            print("[Replay] segments count: \(segments.count)")
+            debugLog("[Replay] segments count: \(segments.count)")
             for (i, seg) in segments.enumerated() {
-                print("[Replay]   segment[\(i)]: start=\(seg.startTimestamp.seconds), end=\(seg.endTimestamp?.seconds ?? -1), url=\(seg.fileURL.lastPathComponent)")
+                debugLog("[Replay]   segment[\(i)]: start=\(seg.startTimestamp.seconds), end=\(seg.endTimestamp?.seconds ?? -1), url=\(seg.fileURL.lastPathComponent)")
             }
 
             if let firstSeg = segments.first {
                 let elapsed = CMTimeGetSeconds(CMTimeSubtract(event.landingTimestamp, firstSeg.startTimestamp))
                 if elapsed < 1.0 {
-                    print("[Replay] buffer too short (\(elapsed)s), skipping")
+                    debugLog("[Replay] buffer too short (\(elapsed)s), skipping")
                     return
                 }
             }
@@ -239,9 +250,9 @@ struct ContentView: View {
 
             extractor.extractClip(landingTimestamp: event.landingTimestamp) { clipAsset in
                 if let clip = clipAsset {
-                    print("[Replay] clip extracted, duration=\(clip.timeRange.duration.seconds), refs=\(clip.referencedURLs.count)")
+                    debugLog("[Replay] clip extracted, duration=\(clip.timeRange.duration.seconds), refs=\(clip.referencedURLs.count)")
                 } else {
-                    print("[Replay] clip extraction returned nil")
+                    debugLog("[Replay] clip extraction returned nil")
                 }
 
                 DispatchQueue.main.async {
@@ -251,10 +262,10 @@ struct ContentView: View {
                         showingReplay = true
                         replayAvailable = true
                         controlsVisible = false
-                        print("[Replay] showingReplay set to true")
+                        debugLog("[Replay] showingReplay set to true")
                     } else {
                         cameraManager.rollingBuffer.clearReplayReference()
-                        print("[Replay] no clip, cleared references")
+                        debugLog("[Replay] no clip, cleared references")
                     }
                 }
             }

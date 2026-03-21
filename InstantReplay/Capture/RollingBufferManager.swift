@@ -59,12 +59,12 @@ final class RollingBufferManager: @unchecked Sendable {
         lock.lock()
 
         guard let active = self.activeWriter, self.sourceFormatDescription != nil else {
-            print("[RollingBuffer] forceRotation: no active writer or format desc, skipping")
+            debugLog("[RollingBuffer] forceRotation: no active writer or format desc, skipping")
             lock.unlock()
             completion()
             return
         }
-        print("[RollingBuffer] forceRotation: active=\(active.fileURL.lastPathComponent), lastPTS=\(self.lastPresentationTime.seconds)")
+        debugLog("[RollingBuffer] forceRotation: active=\(active.fileURL.lastPathComponent), lastPTS=\(self.lastPresentationTime.seconds)")
 
         // If there's already a retiring writer, finalize it first
         if let retiring = self.retiringWriter {
@@ -93,7 +93,7 @@ final class RollingBufferManager: @unchecked Sendable {
         self.startNewSegment(at: endTime)
         lock.unlock()
 
-        print("[RollingBuffer] forceRotation: finalizing \(oldURL.lastPathComponent), start=\(oldStart.seconds), end=\(endTime.seconds)")
+        debugLog("[RollingBuffer] forceRotation: finalizing \(oldURL.lastPathComponent), start=\(oldStart.seconds), end=\(endTime.seconds)")
 
         let group = DispatchGroup()
         group.enter()
@@ -102,7 +102,7 @@ final class RollingBufferManager: @unchecked Sendable {
         }
         group.wait()
 
-        print("[RollingBuffer] forceRotation: finalization complete for \(oldURL.lastPathComponent)")
+        debugLog("[RollingBuffer] forceRotation: finalization complete for \(oldURL.lastPathComponent)")
         onSegmentFinalized(url: oldURL, startTimestamp: oldStart, endTimestamp: endTime)
         completion()
     }

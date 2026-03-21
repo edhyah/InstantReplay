@@ -22,11 +22,11 @@ final class ClipExtractor: @unchecked Sendable {
         completion: @escaping @Sendable (ClipAsset?) -> Void
     ) {
         let waitTime = CaptureConstants.clipPostLandingWait
-        print("[ClipExtractor] waiting \(waitTime)s for post-landing frames")
+        debugLog("[ClipExtractor] waiting \(waitTime)s for post-landing frames")
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + waitTime) { [self] in
-            print("[ClipExtractor] forcing segment rotation")
+            debugLog("[ClipExtractor] forcing segment rotation")
             self.rollingBuffer.forceRotation {
-                print("[ClipExtractor] rotation complete, building clip")
+                debugLog("[ClipExtractor] rotation complete, building clip")
                 let result = self.buildClip(landingTimestamp: landingTimestamp)
                 completion(result)
             }
@@ -41,11 +41,11 @@ final class ClipExtractor: @unchecked Sendable {
         let clipEnd = CMTimeAdd(landingTimestamp, CMTimeMakeWithSeconds(postRoll, preferredTimescale: landingTimestamp.timescale))
 
         let segments = rollingBuffer.segments
-        print("[ClipExtractor] idealClipStart=\(idealClipStart.seconds), clipEnd=\(clipEnd.seconds)")
-        print("[ClipExtractor] total segments: \(segments.count)")
+        debugLog("[ClipExtractor] idealClipStart=\(idealClipStart.seconds), clipEnd=\(clipEnd.seconds)")
+        debugLog("[ClipExtractor] total segments: \(segments.count)")
         for (i, seg) in segments.enumerated() {
             let endStr = seg.endTimestamp.map { String($0.seconds) } ?? "nil(active)"
-            print("[ClipExtractor]   seg[\(i)]: start=\(seg.startTimestamp.seconds), end=\(endStr), file=\(seg.fileURL.lastPathComponent)")
+            debugLog("[ClipExtractor]   seg[\(i)]: start=\(seg.startTimestamp.seconds), end=\(endStr), file=\(seg.fileURL.lastPathComponent)")
         }
 
         // Only use finalized segments (endTimestamp != nil) — active segments aren't readable
@@ -55,9 +55,9 @@ final class ClipExtractor: @unchecked Sendable {
             return CMTimeCompare(segStart, clipEnd) < 0 && CMTimeCompare(segEnd, idealClipStart) > 0
         }
 
-        print("[ClipExtractor] relevant finalized segments: \(relevantSegments.count)")
+        debugLog("[ClipExtractor] relevant finalized segments: \(relevantSegments.count)")
         guard !relevantSegments.isEmpty else {
-            print("[ClipExtractor] no relevant segments found, returning nil")
+            debugLog("[ClipExtractor] no relevant segments found, returning nil")
             return nil
         }
 
@@ -80,9 +80,9 @@ final class ClipExtractor: @unchecked Sendable {
         for segment in relevantSegments {
             let asset = AVURLAsset(url: segment.fileURL)
             let tracks = asset.tracks(withMediaType: .video)
-            print("[ClipExtractor] segment \(segment.fileURL.lastPathComponent): \(tracks.count) video tracks, asset duration=\(asset.duration.seconds)")
+            debugLog("[ClipExtractor] segment \(segment.fileURL.lastPathComponent): \(tracks.count) video tracks, asset duration=\(asset.duration.seconds)")
             guard let assetTrack = tracks.first else {
-                print("[ClipExtractor]   skipping — no video track")
+                debugLog("[ClipExtractor]   skipping — no video track")
                 continue
             }
 
@@ -99,19 +99,19 @@ final class ClipExtractor: @unchecked Sendable {
             let localEnd = CMTimeSubtract(overlapEnd, segStart)
             let localRange = CMTimeRangeMake(start: localStart, duration: CMTimeSubtract(localEnd, localStart))
 
-            print("[ClipExtractor]   localRange: start=\(localRange.start.seconds), dur=\(localRange.duration.seconds)")
+            debugLog("[ClipExtractor]   localRange: start=\(localRange.start.seconds), dur=\(localRange.duration.seconds)")
             do {
                 try compositionTrack.insertTimeRange(localRange, of: assetTrack, at: insertionTime)
                 insertionTime = CMTimeAdd(insertionTime, localRange.duration)
-                print("[ClipExtractor]   inserted, total duration so far=\(insertionTime.seconds)")
+                debugLog("[ClipExtractor]   inserted, total duration so far=\(insertionTime.seconds)")
             } catch {
-                print("[ClipExtractor]   insertTimeRange failed: \(error)")
+                debugLog("[ClipExtractor]   insertTimeRange failed: \(error)")
                 continue
             }
         }
 
         guard CMTimeGetSeconds(insertionTime) >= 0.5 else {
-            print("[ClipExtractor] clip too short (\(CMTimeGetSeconds(insertionTime))s), returning nil")
+            debugLog("[ClipExtractor] clip too short (\(CMTimeGetSeconds(insertionTime))s), returning nil")
             return nil
         }
 
