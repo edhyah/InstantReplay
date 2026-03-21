@@ -10,7 +10,7 @@ final class DebugLog: @unchecked Sendable {
 
     private let lock = NSLock()
     private var entries: [LogEntry] = []
-    private let maxEntries = 2000
+    private let maxEntries = 5000
 
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()

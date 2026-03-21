@@ -5,12 +5,17 @@ struct ReplayPlayerView: UIViewRepresentable {
     let replayManager: ReplayManager
 
     func makeUIView(context: Context) -> ReplayContainerView {
+        debugLog("[ReplayPlayerView] makeUIView called")
         let view = ReplayContainerView()
         replayManager.attachToLayer(view.playerLayer)
         return view
     }
 
-    func updateUIView(_ uiView: ReplayContainerView, context: Context) {}
+    func updateUIView(_ uiView: ReplayContainerView, context: Context) {
+        // Re-attach on updates in case player changed
+        debugLog("[ReplayPlayerView] updateUIView called, re-attaching layer")
+        replayManager.attachToLayer(uiView.playerLayer)
+    }
 }
 
 class ReplayContainerView: UIView {
@@ -50,18 +55,33 @@ final class ReplayManager {
     private(set) var clipCapturedAt: Date? = nil
     private var clipStartTime: CMTime = .zero
     private var timeObserver: Any?
+    private var playerStatusObservation: NSKeyValueObservation?
+    private var itemStatusObservation: NSKeyValueObservation?
+    private var layerReadinessObservation: NSKeyValueObservation?
 
     func attachToLayer(_ layer: AVPlayerLayer) {
+        debugLog("[ReplayManager] attachToLayer called")
+        debugLog("[ReplayManager]   layer=\(layer)")
+        debugLog("[ReplayManager]   player=\(String(describing: player))")
+        debugLog("[ReplayManager]   layer.superlayer=\(String(describing: layer.superlayer))")
         playerLayer = layer
         if let player {
             layer.player = player
+            debugLog("[ReplayManager]   assigned player to layer")
+        } else {
+            debugLog("[ReplayManager]   no player to assign yet")
         }
     }
 
     /// Replaces the current clip with a new one. Hard-cuts immediately.
     func playClip(_ clipAsset: ClipAsset) {
+        debugLog("[ReplayManager] playClip called")
+        debugLog("[ReplayManager]   playerLayer is nil: \(playerLayer == nil)")
+        debugLog("[ReplayManager]   clipAsset.timeRange=\(clipAsset.timeRange.start.seconds)-\(clipAsset.timeRange.end.seconds)")
+
         // Tear down previous looper/player
         removeTimeObserver()
+        removeStatusObservers()
         looper?.disableLooping()
         looper = nil
         player?.pause()
@@ -85,14 +105,29 @@ final class ReplayManager {
         clipDuration = clipAsset.timeRange.duration.seconds
         currentRate = CaptureConstants.defaultPlaybackRate
 
+        // Add status observers before assigning to layer
+        addStatusObservers(player: queuePlayer, item: templateItem)
+
+        debugLog("[ReplayManager]   assigning player to playerLayer")
         playerLayer?.player = queuePlayer
         queuePlayer.rate = CaptureConstants.defaultPlaybackRate
+
+        debugLog("[ReplayManager]   player.status=\(queuePlayer.status.rawValue) (0=unknown, 1=readyToPlay, 2=failed)")
+        debugLog("[ReplayManager]   item.status=\(templateItem.status.rawValue)")
+        if queuePlayer.status == .failed {
+            debugLog("[ReplayManager]   player.error=\(String(describing: queuePlayer.error))")
+        }
+        if templateItem.status == .failed {
+            debugLog("[ReplayManager]   item.error=\(String(describing: templateItem.error))")
+        }
 
         addTimeObserver()
     }
 
     func stop() {
+        debugLog("[ReplayManager] stop called")
         removeTimeObserver()
+        removeStatusObservers()
         looper?.disableLooping()
         looper = nil
         player?.pause()
@@ -147,6 +182,72 @@ final class ReplayManager {
             pause()
         } else {
             resume()
+        }
+    }
+
+    // MARK: - Status Observation
+
+    private func addStatusObservers(player: AVQueuePlayer, item: AVPlayerItem) {
+        // Observe player status
+        playerStatusObservation = player.observe(\.status, options: [.new, .old]) { [weak self] player, change in
+            Task { @MainActor in
+                guard self != nil else { return }
+                let statusString = Self.statusString(player.status)
+                debugLog("[ReplayManager] player.status changed to \(statusString)")
+                if player.status == .failed {
+                    debugLog("[ReplayManager]   player.error=\(String(describing: player.error))")
+                }
+            }
+        }
+
+        // Observe item status
+        itemStatusObservation = item.observe(\.status, options: [.new, .old]) { [weak self] item, change in
+            Task { @MainActor in
+                guard self != nil else { return }
+                let statusString = Self.itemStatusString(item.status)
+                debugLog("[ReplayManager] item.status changed to \(statusString)")
+                if item.status == .failed {
+                    debugLog("[ReplayManager]   item.error=\(String(describing: item.error))")
+                }
+            }
+        }
+
+        // Observe layer readiness
+        if let layer = playerLayer {
+            layerReadinessObservation = layer.observe(\.isReadyForDisplay, options: [.new, .old]) { [weak self] layer, change in
+                Task { @MainActor in
+                    guard self != nil else { return }
+                    debugLog("[ReplayManager] layer.isReadyForDisplay changed to \(layer.isReadyForDisplay)")
+                }
+            }
+            debugLog("[ReplayManager]   initial layer.isReadyForDisplay=\(layer.isReadyForDisplay)")
+        }
+    }
+
+    private func removeStatusObservers() {
+        playerStatusObservation?.invalidate()
+        playerStatusObservation = nil
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
+        layerReadinessObservation?.invalidate()
+        layerReadinessObservation = nil
+    }
+
+    private static func statusString(_ status: AVPlayer.Status) -> String {
+        switch status {
+        case .unknown: return "unknown(0)"
+        case .readyToPlay: return "readyToPlay(1)"
+        case .failed: return "failed(2)"
+        @unknown default: return "unknown(\(status.rawValue))"
+        }
+    }
+
+    private static func itemStatusString(_ status: AVPlayerItem.Status) -> String {
+        switch status {
+        case .unknown: return "unknown(0)"
+        case .readyToPlay: return "readyToPlay(1)"
+        case .failed: return "failed(2)"
+        @unknown default: return "unknown(\(status.rawValue))"
         }
     }
 

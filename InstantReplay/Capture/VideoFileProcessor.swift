@@ -69,12 +69,17 @@ final class VideoFileProcessor: NSObject {
     }
 
     func start() {
-        guard let asset = videoAsset else { return }
+        guard let asset = videoAsset else {
+            debugLog("[VideoFileProcessor] start() called but no videoAsset")
+            return
+        }
+        debugLog("[VideoFileProcessor] start() called, videoFrameRate=\(videoFrameRate)")
 
         processingQueue.async { [weak self] in
             self?.setupReader(for: asset)
 
             DispatchQueue.main.async {
+                debugLog("[VideoFileProcessor] starting display link, trackOutput ready: \(self?.trackOutput != nil)")
                 self?.isPlaying = true
                 self?.startDisplayLink()
             }
@@ -133,8 +138,10 @@ final class VideoFileProcessor: NSObject {
                 }
 
                 reader.startReading()
+                debugLog("[VideoFileProcessor] setupReader: reader started, status=\(reader.status.rawValue)")
 
                 await MainActor.run {
+                    debugLog("[VideoFileProcessor] setupReader complete, assigning trackOutput")
                     self.assetReader = reader
                     self.trackOutput = output
                 }
@@ -153,6 +160,8 @@ final class VideoFileProcessor: NSObject {
         link.add(to: .main, forMode: .common)
         displayLink = link
         lastFrameTime = CACurrentMediaTime()
+        fpsWindowStartTime = lastFrameTime
+        debugLog("[VideoFileProcessor] displayLink started, preferredRate=\(videoFrameRate)")
     }
 
     @objc private func displayLinkFired(_ link: CADisplayLink) {
@@ -164,9 +173,20 @@ final class VideoFileProcessor: NSObject {
     }
 
     private func processNextFrame() {
-        guard let output = trackOutput,
-              let reader = assetReader,
-              reader.status == .reading else {
+        guard let output = trackOutput else {
+            // Reader not ready yet - don't restart, just skip this frame
+            if frameCounter == 0 {
+                debugLog("[VideoFileProcessor] processNextFrame: trackOutput is nil (reader not ready)")
+            }
+            return
+        }
+
+        guard let reader = assetReader, reader.status == .reading else {
+            let status = assetReader?.status.rawValue ?? -1
+            debugLog("[VideoFileProcessor] processNextFrame: reader not reading, status=\(status)")
+            if let error = assetReader?.error {
+                debugLog("[VideoFileProcessor] reader error: \(error)")
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.handlePlaybackComplete()
             }
@@ -174,6 +194,7 @@ final class VideoFileProcessor: NSObject {
         }
 
         guard let sampleBuffer = output.copyNextSampleBuffer() else {
+            debugLog("[VideoFileProcessor] processNextFrame: no more sample buffers, video ended")
             DispatchQueue.main.async { [weak self] in
                 self?.handlePlaybackComplete()
             }

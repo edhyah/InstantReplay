@@ -100,6 +100,7 @@ struct ContentView: View {
         .persistentSystemOverlays(.hidden)
         .statusBarHidden()
         .onAppear {
+            logDeviceInfo()
             setupDetectionCallback()
             setupMovementCallback()
             requestCameraAccess()
@@ -213,10 +214,15 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     if let clip = clipAsset {
                         debugLog("[Video] clip extracted, duration=\(clip.timeRange.duration.seconds)")
-                        replayManager.playClip(clip)
+                        // IMPORTANT: Set showingReplay first so SwiftUI creates ReplayPlayerView
+                        // and attachToLayer is called before playClip tries to use playerLayer
                         showingReplay = true
                         replayAvailable = true
                         controlsVisible = false
+                        // Delay playClip slightly to allow view hierarchy to establish
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            replayManager.playClip(clip)
+                        }
                     } else {
                         debugLog("[Video] clip extraction returned nil")
                     }
@@ -258,11 +264,16 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     if let clip = clipAsset {
                         cameraManager.rollingBuffer.markReplayReference(clip.referencedURLs)
-                        replayManager.playClip(clip)
+                        // IMPORTANT: Set showingReplay first so SwiftUI creates ReplayPlayerView
+                        // and attachToLayer is called before playClip tries to use playerLayer
                         showingReplay = true
                         replayAvailable = true
                         controlsVisible = false
                         debugLog("[Replay] showingReplay set to true")
+                        // Delay playClip slightly to allow view hierarchy to establish
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            replayManager.playClip(clip)
+                        }
                     } else {
                         cameraManager.rollingBuffer.clearReplayReference()
                         debugLog("[Replay] no clip, cleared references")
@@ -270,6 +281,23 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private func logDeviceInfo() {
+        let device = UIDevice.current
+        debugLog("[Device] model=\(device.model), systemVersion=\(device.systemVersion)")
+        debugLog("[Device] name=\(device.name)")
+        debugLog("[Device] systemName=\(device.systemName)")
+
+        // Log machine identifier for more detail
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machineMirror = Mirror(reflecting: systemInfo.machine)
+        let identifier = machineMirror.children.reduce("") { id, element in
+            guard let value = element.value as? Int8, value != 0 else { return id }
+            return id + String(UnicodeScalar(UInt8(value)))
+        }
+        debugLog("[Device] machineIdentifier=\(identifier)")
     }
 
     private func requestCameraAccess() {
