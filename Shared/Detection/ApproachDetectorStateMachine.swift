@@ -125,7 +125,12 @@ final class ApproachDetectorStateMachine: Sendable {
             // Vertical velocity magnitude drops below threshold — landed
             if abs(vVel) < thresholds.landingVerticalMagnitude {
                 // Emit landing event
-                onMovementDetected?(MovementDetectionEvent(landingTimestamp: timestamp))
+                onMovementDetected?(MovementDetectionEvent(
+                    landingTimestamp: timestamp,
+                    takeoffTimestamp: nil,
+                    clipOriginTime: nil,
+                    steps: []
+                ))
                 transition(to: .idle, now: now)
                 approachFrameCount = 0
             }

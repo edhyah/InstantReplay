@@ -175,6 +175,14 @@ struct PlaybackControlsView: View {
                     .fill(Color.white.opacity(0.3))
                     .frame(height: 4)
 
+                // Step markers
+                ForEach(Array(replayManager.stepMarkersForScrubber().enumerated()), id: \.offset) { _, marker in
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(colorForStepType(marker.type))
+                        .frame(width: 3, height: 14)
+                        .offset(x: width * marker.position - 1.5)
+                }
+
                 // Fill
                 Capsule()
                     .fill(Color.white)
@@ -338,6 +346,15 @@ struct PlaybackControlsView: View {
         if rate == 0.25 { return "0.25x" }
         if rate == 0.5 { return "0.5x" }
         return "1x"
+    }
+
+    private func colorForStepType(_ type: DetectedStepEvent.StepType) -> Color {
+        switch type {
+        case .first:       return .blue
+        case .second:      return .green
+        case .orientation: return .orange
+        case .plant:       return .red
+        }
     }
 
     private func resetAutoHide() {

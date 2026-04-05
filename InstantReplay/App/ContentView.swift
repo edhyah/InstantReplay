@@ -207,7 +207,7 @@ struct ContentView: View {
         }
 
         videoProcessor.onMovementDetected = { event in
-            debugLog("[Video] Movement detected at timestamp=\(event.landingTimestamp.seconds)")
+            debugLog("[Video] Movement detected at timestamp=\(event.landingTimestamp.seconds), steps=\(event.steps.count)")
 
             // Extract a clip around the detection timestamp
             videoProcessor.extractClip(landingTimestamp: event.landingTimestamp) { clipAsset in
@@ -221,7 +221,7 @@ struct ContentView: View {
                         controlsVisible = false
                         // Delay playClip slightly to allow view hierarchy to establish
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            replayManager.playClip(clip)
+                            replayManager.playClip(clip, steps: event.steps)
                         }
                     } else {
                         debugLog("[Video] clip extraction returned nil")
@@ -272,7 +272,7 @@ struct ContentView: View {
                         debugLog("[Replay] showingReplay set to true")
                         // Delay playClip slightly to allow view hierarchy to establish
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            replayManager.playClip(clip)
+                            replayManager.playClip(clip, steps: event.steps)
                         }
                     } else {
                         cameraManager.rollingBuffer.clearReplayReference()

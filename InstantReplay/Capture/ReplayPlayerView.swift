@@ -53,6 +53,8 @@ final class ReplayManager {
     private(set) var clipDuration: Double = 0
     private(set) var currentTime: Double = 0
     private(set) var clipCapturedAt: Date? = nil
+    private(set) var stepEvents: [DetectedStepEvent] = []
+    private(set) var clipOriginTime: CMTime = .zero
     private var clipStartTime: CMTime = .zero
     private var timeObserver: Any?
     private var playerStatusObservation: NSKeyValueObservation?
@@ -74,10 +76,14 @@ final class ReplayManager {
     }
 
     /// Replaces the current clip with a new one. Hard-cuts immediately.
-    func playClip(_ clipAsset: ClipAsset) {
+    func playClip(_ clipAsset: ClipAsset, steps: [DetectedStepEvent] = []) {
         debugLog("[ReplayManager] playClip called")
         debugLog("[ReplayManager]   playerLayer is nil: \(playerLayer == nil)")
         debugLog("[ReplayManager]   clipAsset.timeRange=\(clipAsset.timeRange.start.seconds)-\(clipAsset.timeRange.end.seconds)")
+        debugLog("[ReplayManager]   steps count: \(steps.count), clipOriginTime=\(clipAsset.clipOriginTime.seconds)")
+        for step in steps {
+            debugLog("[ReplayManager]   step: \(step.type.rawValue) at \(step.timestamp)")
+        }
 
         // Tear down previous looper/player
         removeTimeObserver()
@@ -104,6 +110,8 @@ final class ReplayManager {
         clipStartTime = clipAsset.timeRange.start
         clipDuration = clipAsset.timeRange.duration.seconds
         currentRate = CaptureConstants.defaultPlaybackRate
+        clipOriginTime = clipAsset.clipOriginTime
+        stepEvents = steps
 
         // Add status observers before assigning to layer
         addStatusObservers(player: queuePlayer, item: templateItem)
@@ -138,7 +146,21 @@ final class ReplayManager {
         clipDuration = 0
         currentTime = 0
         currentRate = CaptureConstants.defaultPlaybackRate
+        stepEvents = []
+        clipOriginTime = .zero
         playerLayer?.player = nil
+    }
+
+    /// Returns step events with scrubber positions (0.0-1.0) for UI rendering
+    func stepMarkersForScrubber() -> [(type: DetectedStepEvent.StepType, position: Double)] {
+        guard clipDuration > 0 else { return [] }
+
+        return stepEvents.compactMap { step in
+            let relativeTime = step.timestamp - clipOriginTime.seconds
+            // Only include steps that fall within the clip
+            guard relativeTime >= 0 && relativeTime <= clipDuration else { return nil }
+            return (type: step.type, position: relativeTime / clipDuration)
+        }
     }
 
     // MARK: - Playback Controls
