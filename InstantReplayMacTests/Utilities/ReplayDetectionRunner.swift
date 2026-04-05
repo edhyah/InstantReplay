@@ -255,6 +255,24 @@ final class ReplayDetectionRunner {
         // Write step detector debug log
         stepDetector.writeDebugLog(to: "/tmp/step_detector_debug.log")
 
+        // Log step comparison results
+        var stepDebug: [String] = []
+        stepDebug.append("Video: \(reader.videoInfo.filename)")
+        stepDebug.append("Detected steps arrays: \(detected.steps.count)")
+        for (i, stepSequence) in detected.steps.enumerated() {
+            stepDebug.append("  Approach \(i) steps: \(stepSequence.map { "(\($0.type.rawValue):\($0.timestamp))" }.joined(separator: ", "))")
+        }
+        for (i, stepComparisons) in errors.steps.enumerated() {
+            stepDebug.append("Approach \(i):")
+            for comparison in stepComparisons {
+                let detected = comparison.detected.map { String($0) } ?? "nil"
+                let delta = comparison.delta.map { String($0) } ?? "nil"
+                stepDebug.append("  \(comparison.stepType): detected=\(detected), expected=\(comparison.expected), delta=\(delta), withinTol=\(comparison.withinTolerance), footMatch=\(comparison.footMatch)")
+            }
+        }
+        let existingLog = (try? String(contentsOfFile: "/tmp/step_comparison_debug.log")) ?? ""
+        try? (existingLog + "\n---\n" + stepDebug.joined(separator: "\n")).write(toFile: "/tmp/step_comparison_debug.log", atomically: true, encoding: .utf8)
+
         return ReplayDetectionResult(
             video: reader.videoInfo.filename,
             detected: detected,

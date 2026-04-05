@@ -34,6 +34,7 @@ final class StepDetector: Sendable {
     /// Detect steps between approachStart and takeoff
     /// Returns array of 4 steps: first, second, orientation, plant
     func detectSteps(approachStart: TimeInterval, takeoff: TimeInterval) -> [DetectedStep] {
+        debugLog.removeAll() // Clear log for each detection
         log("detectSteps called for \(approachStart) to \(takeoff)")
         log("Total frame data count: \(frameData.count)")
 
@@ -65,32 +66,34 @@ final class StepDetector: Sendable {
         let leftPeaks = findPeaks(in: leftSignal, foot: "left")
         let rightPeaks = findPeaks(in: rightSignal, foot: "right")
 
-        // Merge and sort by timestamp
-        var allPeaks = leftPeaks + rightPeaks
-        allPeaks.sort { $0.timestamp < $1.timestamp }
-
-        log("Left peaks: \(leftPeaks.count), Right peaks: \(rightPeaks.count), Total: \(allPeaks.count)")
-        for peak in allPeaks {
+        log("Left peaks: \(leftPeaks.count), Right peaks: \(rightPeaks.count)")
+        for peak in (leftPeaks + rightPeaks).sorted(by: { $0.timestamp < $1.timestamp }) {
             log("  Peak at t=\(peak.timestamp), y=\(peak.y), foot=\(peak.foot)")
         }
 
-        // If we have fewer than 4 peaks, try to find more by relaxing the peak criteria
-        if allPeaks.count < 4 {
-            log("Not enough peaks with strict criteria, trying relaxed detection")
-            allPeaks = findRelaxedPeaks(left: leftSignal, right: rightSignal)
-            allPeaks.sort { $0.timestamp < $1.timestamp }
-            log("Relaxed detection found \(allPeaks.count) peaks")
+        // Try to find 4 steps with the expected alternating pattern: right, left, right, left
+        // Use target timing based on typical volleyball approach
+        if let sequence = findBestAlternatingSequence(rightPeaks: rightPeaks, leftPeaks: leftPeaks, takeoff: takeoff) {
+            log("Found alternating sequence")
+            for peak in sequence {
+                log("  Selected: t=\(peak.timestamp), y=\(peak.y), foot=\(peak.foot)")
+            }
+            return sequence.map { DetectedStep(timestamp: $0.timestamp, foot: $0.foot, ankleY: $0.y) }
         }
 
+        // Fallback: merge all peaks and select 4 well-distributed ones
+        log("Could not find alternating pattern, using fallback")
+        var allPeaks = leftPeaks + rightPeaks
+        allPeaks.sort { $0.timestamp < $1.timestamp }
+
         guard allPeaks.count >= 4 else {
-            log("Not enough peaks even with relaxed detection")
+            log("Not enough peaks")
             return []
         }
 
-        // Select 4 well-distributed peaks working backwards from takeoff
         let selectedPeaks = selectWellDistributedPeaks(allPeaks, count: 4, minSpacing: 0.1)
 
-        log("Selected peaks:")
+        log("Fallback selected peaks:")
         for peak in selectedPeaks {
             log("  Selected: t=\(peak.timestamp), y=\(peak.y), foot=\(peak.foot)")
         }
@@ -116,47 +119,92 @@ final class StepDetector: Sendable {
         return peaks
     }
 
-    /// Find peaks with relaxed criteria for sparse data
-    private func findRelaxedPeaks(left: [(timestamp: TimeInterval, y: CGFloat)], right: [(timestamp: TimeInterval, y: CGFloat)]) -> [(timestamp: TimeInterval, y: CGFloat, foot: String)] {
-        var allPoints: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
-        for p in left { allPoints.append((p.timestamp, p.y, "left")) }
-        for p in right { allPoints.append((p.timestamp, p.y, "right")) }
-        allPoints.sort { $0.timestamp < $1.timestamp }
+    /// Find 4 steps with alternating pattern: right, left, right, left
+    /// Uses target timing to find peaks closest to expected positions
+    private func findBestAlternatingSequence(
+        rightPeaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)],
+        leftPeaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)],
+        takeoff: TimeInterval
+    ) -> [(timestamp: TimeInterval, y: CGFloat, foot: String)]? {
+        guard !rightPeaks.isEmpty && !leftPeaks.isEmpty else { return nil }
 
-        guard allPoints.count >= 3 else { return allPoints }
+        // Typical volleyball approach timing (from takeoff, going backwards):
+        // plant: 0-0.2s before takeoff
+        // orientation: 0.2-0.5s before takeoff
+        // second: 0.6-1.0s before takeoff
+        // first: 1.0-1.5s before takeoff
 
-        var peaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
+        let sortedLeft = leftPeaks.sorted { $0.timestamp < $1.timestamp }
+        let sortedRight = rightPeaks.sorted { $0.timestamp < $1.timestamp }
 
-        // Find local maxima in Y (ignoring foot)
-        for i in 1..<(allPoints.count - 1) {
-            let prev = allPoints[i - 1].y
-            let curr = allPoints[i].y
-            let next = allPoints[i + 1].y
-
-            if curr > prev && curr >= next {
-                peaks.append(allPoints[i])
-            }
+        // Find plant (left, closest to takeoff, within 0.3s)
+        guard let plant = sortedLeft.reversed().first(where: { takeoff - $0.timestamp <= 0.3 && takeoff - $0.timestamp >= 0 }) else {
+            log("No plant found within 0.3s of takeoff")
+            return nil
         }
 
-        // If still not enough, also include the endpoints if they look like peaks
-        if peaks.count < 4 {
-            if allPoints.first!.y >= (allPoints.count > 1 ? allPoints[1].y : 0) {
-                peaks.insert(allPoints.first!, at: 0)
-            }
-            if let last = allPoints.last, last.y >= (allPoints.count > 1 ? allPoints[allPoints.count - 2].y : 0) {
-                peaks.append(last)
-            }
+        // Find orientation (right, before plant, with minimum separation)
+        // Must be at least 0.05s before plant to avoid same-timestamp issues
+        let orientationTarget = plant.timestamp - 0.3
+        guard let orientation = findClosestPeak(in: sortedRight, target: orientationTarget, maxDelta: 0.3, before: plant.timestamp - 0.05) else {
+            log("No orientation found")
+            return nil
         }
 
-        return peaks
+        // Find second (left, before orientation)
+        let secondTarget = orientation.timestamp - 0.5
+        guard let second = findClosestPeak(in: sortedLeft, target: secondTarget, maxDelta: 0.4, before: orientation.timestamp - 0.05) else {
+            log("No second found")
+            return nil
+        }
+
+        // Find first (right, before second)
+        let firstTarget = second.timestamp - 0.5
+        guard let first = findClosestPeak(in: sortedRight, target: firstTarget, maxDelta: 0.5, before: second.timestamp - 0.05) else {
+            log("No first found")
+            return nil
+        }
+
+        return [first, second, orientation, plant]
+    }
+
+    /// Find the peak closest to target timestamp within maxDelta, optionally before a given time
+    private func findClosestPeak(
+        in peaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)],
+        target: TimeInterval,
+        maxDelta: TimeInterval,
+        before: TimeInterval? = nil
+    ) -> (timestamp: TimeInterval, y: CGFloat, foot: String)? {
+        var candidates = peaks
+        if let beforeTime = before {
+            candidates = candidates.filter { $0.timestamp < beforeTime }
+        }
+
+        let validPeaks = candidates.filter { abs($0.timestamp - target) <= maxDelta }
+        return validPeaks.min(by: { abs($0.timestamp - target) < abs($1.timestamp - target) })
     }
 
     /// Select n well-distributed peaks, preferring those closest to takeoff
     private func selectWellDistributedPeaks(_ peaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)], count: Int, minSpacing: TimeInterval) -> [(timestamp: TimeInterval, y: CGFloat, foot: String)] {
         guard peaks.count >= count else { return peaks }
 
-        // Sort by timestamp descending (latest first)
-        let sortedPeaks = peaks.sorted { $0.timestamp > $1.timestamp }
+        // Deduplicate peaks at the same timestamp (keep one with higher Y)
+        var uniquePeaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
+        let sortedByTime = peaks.sorted { $0.timestamp < $1.timestamp }
+        for peak in sortedByTime {
+            if let lastPeak = uniquePeaks.last, lastPeak.timestamp == peak.timestamp {
+                // Same timestamp - keep the one with higher Y (more prominent foot plant)
+                if peak.y > lastPeak.y {
+                    uniquePeaks[uniquePeaks.count - 1] = peak
+                }
+            } else {
+                uniquePeaks.append(peak)
+            }
+        }
+
+        guard uniquePeaks.count >= count else { return uniquePeaks }
+
+        let sortedPeaks = uniquePeaks.sorted { $0.timestamp > $1.timestamp }
 
         var selected: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
 
@@ -172,7 +220,6 @@ final class StepDetector: Sendable {
             }
         }
 
-        // Return in chronological order (earliest first)
         return selected.reversed()
     }
 }
