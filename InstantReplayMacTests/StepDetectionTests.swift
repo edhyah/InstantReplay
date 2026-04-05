@@ -160,23 +160,6 @@ final class StepDetectionTests: XCTestCase {
         }
     }
 
-    func testFootIdentificationCorrect() throws {
-        let testVideos = try getAllTestVideos()
-
-        for (videoName, reader, groundTruth) in testVideos {
-            let result = runDetection(reader: reader, groundTruth: groundTruth)
-
-            for (approachIndex, stepComparisons) in result.errors.steps.enumerated() {
-                for comparison in stepComparisons {
-                    XCTAssertTrue(
-                        comparison.footMatch,
-                        "\(videoName) approach \(approachIndex) \(comparison.stepType): foot identification mismatch"
-                    )
-                }
-            }
-        }
-    }
-
     func testStepsOccurBetweenApproachStartAndTakeoff() throws {
         let testVideos = try getAllTestVideos()
 

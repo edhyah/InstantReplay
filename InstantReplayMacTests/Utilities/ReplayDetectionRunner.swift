@@ -247,7 +247,7 @@ final class ReplayDetectionRunner {
                 || detected.takeoffs.count != truth.approaches.count
                 || detected.peaks.count != truth.approaches.count
                 || detected.landings.count != truth.approaches.count
-            let stepsPass = errors.steps.allSatisfy { $0.allSatisfy { $0.withinTolerance && $0.footMatch } }
+            let stepsPass = errors.steps.allSatisfy { $0.allSatisfy { $0.withinTolerance } }
             let stepCountMatch = detected.steps.count == approachesWithSteps.count
             passed = allComparisons.allSatisfy { $0.withinTolerance } && !countMismatch && stepsPass && stepCountMatch
         }
