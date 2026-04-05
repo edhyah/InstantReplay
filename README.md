@@ -1,8 +1,22 @@
 # InstantReplay
 
-## Notes
+Instant replay app for volleyball training. Point your iPad at a player, and the app automatically detects spike approaches and plays them back in slow-motion for immediate technique review.
 
-- Only works in landscape mode
+## How It Works
+
+1. **Pose detection** — Uses Vision framework to track body skeletons in real-time
+2. **Approach detection** — State machine identifies the dominant mover and detects approach → jump → landing sequences
+3. **Instant replay** — On landing, plays back the jump from a rolling buffer at 0.25x–1.0x speed
+
+## Requirements
+
+- iPad (landscape orientation)
+- Camera positioned perpendicular to the approach (side view, ~5m distance)
+
+## Modes
+
+- **Camera** — Live capture and replay
+- **Video** — Import pre-recorded videos for analysis
 
 ## Testing
 
@@ -45,6 +59,12 @@ xcodebuild test -scheme InstantReplayMacTests -destination 'platform=macOS'
   "approaches": [
     {
       "approachStart": 2.01,
+      "steps": {
+        "first": { "timestamp": 2.50, "foot": "left" },
+        "second": { "timestamp": 2.70, "foot": "right" },
+        "orientation": { "timestamp": 2.85, "foot": "left" },
+        "plant": { "timestamp": 2.95, "foot": "right" }
+      },
       "takeoff": 3.03,
       "peak": 3.41,
       "landing": 3.8
@@ -52,6 +72,19 @@ xcodebuild test -scheme InstantReplayMacTests -destination 'platform=macOS'
   ]
 }
 ```
+
+**Labeling guide:**
+
+| Field | What to mark | Precision |
+|-------|--------------|-----------|
+| `approachStart` | Ball leaves hitter's hands/forearms | Rough (~0.5s) |
+| `steps.first` | First foot plant + which foot | Precise (~0.1s) |
+| `steps.second` | Second foot plant + which foot | Precise (~0.1s) |
+| `steps.orientation` | Third foot plant + which foot | Precise (~0.1s) |
+| `steps.plant` | Fourth foot plant before jump + which foot | Precise (~0.1s) |
+| `takeoff` | Feet leave ground | Precise (~0.2s) |
+| `peak` | Highest point of jump | Precise (~0.2s) |
+| `landing` | Feet touch ground | Precise (~0.2s) |
 
 ## Project Structure
 

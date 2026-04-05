@@ -1,13 +1,25 @@
 {
     "approaches": [
         {
-            "approachStart": 2.01,
-            "takeoff": 3.03,
+            "approachStart": 0.7,
+            "steps": {
+                "first": { "timestamp": 1.9, "foot": "right" },
+                "second": { "timestamp": 2.33, "foot": "left" },
+                "orientation": { "timestamp": 2.71, "foot": "right" },
+                "plant": { "timestamp": 2.94, "foot": "left" }
+            },
+            "takeoff": 3.05,
             "peak": 3.41,
             "landing": 3.8
         },
         {
-            "approachStart": 12.06,
+            "approachStart": 10.98,
+            "steps": {
+                "first": { "timestamp": 12.0, "foot": "right" },
+                "second": { "timestamp": 12.45, "foot": "left" },
+                "orientation": { "timestamp": 12.85, "foot": "right" },
+                "plant": { "timestamp": 13.08, "foot": "left" }
+            },
             "takeoff": 13.21,
             "peak": 13.61,
             "landing": 13.97

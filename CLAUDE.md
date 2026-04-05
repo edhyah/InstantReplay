@@ -44,6 +44,17 @@ The camera is perpendicular to movement. Left and right body parts overlap from 
 
 RollingBufferManager writes to two AVAssetWriter instances simultaneously for ~1 second during rotation. Both the old and new segment receive frames during the overlap window, ensuring no gaps in the recorded timeline.
 
+### Detection precision priorities
+
+`approachStart` is a rough marker (ball leaves hitter's hands/forearms) and does not require precise detection. The algorithm can work backwards from more reliable events.
+
+The following require precise detection:
+- **steps** (first, second, orientation, plant) — foot contact/plant timestamps
+- **takeoff** — feet leave ground
+- **peak** — highest point of jump
+
+`landing` (when the player touches the floor with any feet) also does not have to be precise as long as the detection is always generous (can't have any scenario where detected landing is before ground truth landing, but doesn't matter if it's after the ground truth landing).
+
 ---
 
 ## Running Tests
