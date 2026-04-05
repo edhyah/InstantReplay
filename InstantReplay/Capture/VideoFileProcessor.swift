@@ -39,6 +39,9 @@ final class VideoFileProcessor: NSObject {
     private var fpsWindowFrameCount: Int = 0
     private var playbackStartTime: CFTimeInterval = 0
     private var videoStartTimestamp: CMTime = .zero
+    private var currentFrameBuffer: CMSampleBuffer?
+    private var currentFrameTimestamp: CMTime = .zero
+    private var currentFrameAdjustedTimestamp: CMTime = .zero
 
     // Calculate subsampling rate based on video frame rate to achieve ~15fps detection
     private var poseSubsamplingRate: Int {
@@ -106,6 +109,9 @@ final class VideoFileProcessor: NSObject {
         measuredFPS = 0
         playbackStartTime = 0
         videoStartTimestamp = .zero
+        currentFrameBuffer = nil
+        currentFrameTimestamp = .zero
+        currentFrameAdjustedTimestamp = .zero
     }
 
     func reset() {
@@ -204,10 +210,16 @@ final class VideoFileProcessor: NSObject {
         let elapsedRealTime = currentTime - playbackStartTime
         let targetVideoTime = CMTime(seconds: elapsedRealTime, preferredTimescale: 600)
 
-        // Read frames until we catch up to the target time
-        var latestBuffer: CMSampleBuffer?
-        var latestTimestamp: CMTime = .zero
+        // If we already have a frame that's at or past the target time, reuse it
+        // This prevents consuming frames too fast for low frame rate videos
+        if currentFrameBuffer != nil && CMTimeCompare(currentFrameAdjustedTimestamp, targetVideoTime) >= 0 {
+            // Current frame is still valid for this target time, reuse it
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(currentFrameBuffer!) else { return }
+            displayFrame(pixelBuffer: pixelBuffer, timestamp: currentFrameTimestamp, currentTime: currentTime)
+            return
+        }
 
+        // Read frames until we catch up to the target time
         while true {
             guard let sampleBuffer = output.copyNextSampleBuffer() else {
                 debugLog("[VideoFileProcessor] processNextFrame: no more sample buffers, video ended")
@@ -226,11 +238,12 @@ final class VideoFileProcessor: NSObject {
             }
 
             let adjustedTimestamp = CMTimeSubtract(frameTimestamp, videoStartTimestamp)
-            latestBuffer = sampleBuffer
-            latestTimestamp = frameTimestamp
 
             // If this frame is at or past the target time, use it
             if CMTimeCompare(adjustedTimestamp, targetVideoTime) >= 0 {
+                currentFrameBuffer = sampleBuffer
+                currentFrameTimestamp = frameTimestamp
+                currentFrameAdjustedTimestamp = adjustedTimestamp
                 break
             }
 
@@ -238,9 +251,11 @@ final class VideoFileProcessor: NSObject {
             frameCounter += 1
         }
 
-        guard let sampleBuffer = latestBuffer,
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let timestamp = latestTimestamp
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(currentFrameBuffer!) else { return }
+        displayFrame(pixelBuffer: pixelBuffer, timestamp: currentFrameTimestamp, currentTime: currentTime)
+    }
+
+    private func displayFrame(pixelBuffer: CVPixelBuffer, timestamp: CMTime, currentTime: CFTimeInterval) {
 
         // Update FPS measurement
         let now = CACurrentMediaTime()
@@ -304,19 +319,6 @@ final class VideoFileProcessor: NSObject {
         let preRoll = CaptureConstants.clipPreRollDuration
         let postRoll = CaptureConstants.clipPostRollDuration
 
-        let clipStart = CMTimeSubtract(landingTimestamp, CMTimeMakeWithSeconds(preRoll, preferredTimescale: landingTimestamp.timescale))
-        let clipEnd = CMTimeAdd(landingTimestamp, CMTimeMakeWithSeconds(postRoll, preferredTimescale: landingTimestamp.timescale))
-
-        // Clamp to valid range (start >= 0)
-        let clampedStart = CMTimeMaximum(clipStart, .zero)
-        let duration = CMTimeSubtract(clipEnd, clampedStart)
-
-        guard CMTimeGetSeconds(duration) >= 0.5 else {
-            debugLog("[VideoFileProcessor] clip too short, returning nil")
-            completion(nil)
-            return
-        }
-
         let asset = AVURLAsset(url: url)
         let composition = AVMutableComposition()
 
@@ -324,6 +326,22 @@ final class VideoFileProcessor: NSObject {
             do {
                 let tracks = try await asset.loadTracks(withMediaType: .video)
                 guard let videoTrack = tracks.first else {
+                    await MainActor.run { completion(nil) }
+                    return
+                }
+
+                // Use the video track's natural time scale for consistent timing
+                let naturalTimeScale = try await videoTrack.load(.naturalTimeScale)
+
+                let clipStart = CMTimeSubtract(landingTimestamp, CMTimeMakeWithSeconds(preRoll, preferredTimescale: naturalTimeScale))
+                let clipEnd = CMTimeAdd(landingTimestamp, CMTimeMakeWithSeconds(postRoll, preferredTimescale: naturalTimeScale))
+
+                // Clamp to valid range (start >= 0)
+                let clampedStart = CMTimeMaximum(clipStart, CMTime(value: 0, timescale: naturalTimeScale))
+                let duration = CMTimeSubtract(clipEnd, clampedStart)
+
+                guard CMTimeGetSeconds(duration) >= 0.5 else {
+                    debugLog("[VideoFileProcessor] clip too short, returning nil")
                     await MainActor.run { completion(nil) }
                     return
                 }
@@ -336,12 +354,15 @@ final class VideoFileProcessor: NSObject {
                     return
                 }
 
+                // Set the composition track's natural time scale to match the source
+                compositionTrack.naturalTimeScale = naturalTimeScale
+
                 let timeRange = CMTimeRangeMake(start: clampedStart, duration: duration)
-                try compositionTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
+                try compositionTrack.insertTimeRange(timeRange, of: videoTrack, at: CMTime(value: 0, timescale: naturalTimeScale))
 
                 let clipAsset = ClipAsset(
                     asset: composition,
-                    timeRange: CMTimeRangeMake(start: .zero, duration: duration),
+                    timeRange: CMTimeRangeMake(start: CMTime(value: 0, timescale: naturalTimeScale), duration: duration),
                     referencedURLs: [url],
                     clipOriginTime: clampedStart
                 )
