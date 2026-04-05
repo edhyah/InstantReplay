@@ -12,11 +12,44 @@ struct TimestampComparison: Codable, Sendable {
     let withinTolerance: Bool
 }
 
+// MARK: - Step Detection Types
+
+enum StepType: String, Codable, Sendable {
+    case first
+    case second
+    case orientation
+    case plant
+}
+
+enum DetectedFoot: String, Codable, Sendable {
+    case left
+    case right
+    case unknown
+}
+
+struct StepEvent: Codable, Sendable {
+    let type: StepType
+    let timestamp: TimeInterval
+    let foot: DetectedFoot
+}
+
+struct StepComparison: Codable, Sendable {
+    let stepType: String
+    let detected: TimeInterval?
+    let expected: TimeInterval
+    let delta: TimeInterval?
+    let withinTolerance: Bool
+    let footMatch: Bool
+}
+
+// MARK: - Detection Results
+
 struct DetectionErrors: Codable, Sendable {
     var approachStart: [TimestampComparison] = []
     var takeoff: [TimestampComparison] = []
     var peak: [TimestampComparison] = []
     var landing: [TimestampComparison] = []
+    var steps: [[StepComparison]] = []
 }
 
 struct DetectedEvents: Codable, Sendable {
@@ -24,6 +57,7 @@ struct DetectedEvents: Codable, Sendable {
     var takeoffs: [DetectedEvent] = []
     var peaks: [DetectedEvent] = []
     var landings: [DetectedEvent] = []
+    var steps: [[StepEvent]] = []  // One array of 4 steps per approach
 }
 
 struct StateTraceEntry: Codable, Sendable {
