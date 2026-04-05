@@ -65,32 +65,37 @@ final class StepDetector: Sendable {
         let leftPeaks = findPeaks(in: leftSignal, foot: "left")
         let rightPeaks = findPeaks(in: rightSignal, foot: "right")
 
-        log("Left peaks: \(leftPeaks.count), Right peaks: \(rightPeaks.count)")
-
-        // Merge all peaks and sort by timestamp
+        // Merge and sort by timestamp
         var allPeaks = leftPeaks + rightPeaks
         allPeaks.sort { $0.timestamp < $1.timestamp }
 
-        log("Total peaks: \(allPeaks.count)")
+        log("Left peaks: \(leftPeaks.count), Right peaks: \(rightPeaks.count), Total: \(allPeaks.count)")
         for peak in allPeaks {
             log("  Peak at t=\(peak.timestamp), y=\(peak.y), foot=\(peak.foot)")
         }
 
-        // Need at least 4 peaks for 4 steps
+        // If we have fewer than 4 peaks, try to find more by relaxing the peak criteria
+        if allPeaks.count < 4 {
+            log("Not enough peaks with strict criteria, trying relaxed detection")
+            allPeaks = findRelaxedPeaks(left: leftSignal, right: rightSignal)
+            allPeaks.sort { $0.timestamp < $1.timestamp }
+            log("Relaxed detection found \(allPeaks.count) peaks")
+        }
+
         guard allPeaks.count >= 4 else {
-            log("Not enough peaks")
+            log("Not enough peaks even with relaxed detection")
             return []
         }
 
-        // Take the last 4 peaks (closest to takeoff - most reliable)
-        let lastFourPeaks = Array(allPeaks.suffix(4))
+        // Select 4 well-distributed peaks working backwards from takeoff
+        let selectedPeaks = selectWellDistributedPeaks(allPeaks, count: 4, minSpacing: 0.1)
 
         log("Selected peaks:")
-        for peak in lastFourPeaks {
+        for peak in selectedPeaks {
             log("  Selected: t=\(peak.timestamp), y=\(peak.y), foot=\(peak.foot)")
         }
 
-        return lastFourPeaks.map { DetectedStep(timestamp: $0.timestamp, foot: $0.foot, ankleY: $0.y) }
+        return selectedPeaks.map { DetectedStep(timestamp: $0.timestamp, foot: $0.foot, ankleY: $0.y) }
     }
 
     private func findPeaks(in signal: [(timestamp: TimeInterval, y: CGFloat)], foot: String) -> [(timestamp: TimeInterval, y: CGFloat, foot: String)] {
@@ -103,12 +108,71 @@ final class StepDetector: Sendable {
             let curr = signal[i].y
             let next = signal[i + 1].y
 
-            // Local maximum in Y (foot plant - foot at lowest point = highest Y in screen coords)
             if curr > prev && curr >= next {
                 peaks.append((timestamp: signal[i].timestamp, y: signal[i].y, foot: foot))
             }
         }
 
         return peaks
+    }
+
+    /// Find peaks with relaxed criteria for sparse data
+    private func findRelaxedPeaks(left: [(timestamp: TimeInterval, y: CGFloat)], right: [(timestamp: TimeInterval, y: CGFloat)]) -> [(timestamp: TimeInterval, y: CGFloat, foot: String)] {
+        var allPoints: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
+        for p in left { allPoints.append((p.timestamp, p.y, "left")) }
+        for p in right { allPoints.append((p.timestamp, p.y, "right")) }
+        allPoints.sort { $0.timestamp < $1.timestamp }
+
+        guard allPoints.count >= 3 else { return allPoints }
+
+        var peaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
+
+        // Find local maxima in Y (ignoring foot)
+        for i in 1..<(allPoints.count - 1) {
+            let prev = allPoints[i - 1].y
+            let curr = allPoints[i].y
+            let next = allPoints[i + 1].y
+
+            if curr > prev && curr >= next {
+                peaks.append(allPoints[i])
+            }
+        }
+
+        // If still not enough, also include the endpoints if they look like peaks
+        if peaks.count < 4 {
+            if allPoints.first!.y >= (allPoints.count > 1 ? allPoints[1].y : 0) {
+                peaks.insert(allPoints.first!, at: 0)
+            }
+            if let last = allPoints.last, last.y >= (allPoints.count > 1 ? allPoints[allPoints.count - 2].y : 0) {
+                peaks.append(last)
+            }
+        }
+
+        return peaks
+    }
+
+    /// Select n well-distributed peaks, preferring those closest to takeoff
+    private func selectWellDistributedPeaks(_ peaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)], count: Int, minSpacing: TimeInterval) -> [(timestamp: TimeInterval, y: CGFloat, foot: String)] {
+        guard peaks.count >= count else { return peaks }
+
+        // Sort by timestamp descending (latest first)
+        let sortedPeaks = peaks.sorted { $0.timestamp > $1.timestamp }
+
+        var selected: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
+
+        for peak in sortedPeaks {
+            if selected.isEmpty {
+                selected.append(peak)
+            } else if let lastSelected = selected.last, peak.timestamp < lastSelected.timestamp - minSpacing {
+                selected.append(peak)
+            }
+
+            if selected.count == count {
+                break
+            }
+        }
+
+        // Return in chronological order (earliest first)
+        return selected.reversed()
     }
 }
