@@ -10,69 +10,68 @@ final class PoseCaptureTests: XCTestCase {
         #endif
     }
 
-    func testCaptureTestVideoPoses() throws {
-        // Vision ML doesn't work on iOS Simulator - this test must run on a real device
+    private func captureVideoPoses(videoName: String) throws {
         try XCTSkipIf(isSimulator, "Vision ML pose estimation unavailable on Simulator - run on real device")
 
-        // Find test videos in the test bundle or Documents directory
         let testBundle = Bundle(for: Self.self)
-        let videoExtensions = ["mov", "mp4", "m4v"]
+        let videoExtensions = ["mov", "MOV", "mp4", "m4v"]
 
-        // Look for videos in the test bundle first
-        var videoURLs: [URL] = []
+        var videoURL: URL?
         for ext in videoExtensions {
-            videoURLs += testBundle.urls(forResourcesWithExtension: ext, subdirectory: nil) ?? []
-        }
-
-        // Also check app's Documents directory for videos placed there
-        if let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-            if let contents = try? FileManager.default.contentsOfDirectory(
-                at: documentsDir,
-                includingPropertiesForKeys: nil
-            ) {
-                for ext in videoExtensions {
-                    videoURLs += contents.filter { $0.pathExtension.lowercased() == ext }
-                }
+            if let url = testBundle.url(forResource: videoName, withExtension: ext) {
+                videoURL = url
+                break
             }
         }
 
-        guard !videoURLs.isEmpty else {
-            XCTFail("No test videos found. Place .mov/.mp4 files in test bundle or app Documents directory.")
+        guard let videoURL = videoURL else {
+            XCTFail("Video not found: \(videoName)")
             return
         }
 
         let outputDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let outputURL = outputDir.appendingPathComponent("\(videoName).poses.json")
 
-        for videoURL in videoURLs {
-            let videoName = videoURL.deletingPathExtension().lastPathComponent
-            let outputURL = outputDir.appendingPathComponent("\(videoName).poses.json")
+        print("Capturing poses from: \(videoURL.lastPathComponent)")
 
-            print("Capturing poses from: \(videoURL.lastPathComponent)")
+        let writer = PoseCaptureWriter(videoURL: videoURL, outputURL: outputURL)
+        try writer.capture()
 
-            let writer = PoseCaptureWriter(videoURL: videoURL, outputURL: outputURL)
-            try writer.capture()
+        print("Wrote poses to: \(outputURL.path)")
 
-            print("Wrote poses to: \(outputURL.path)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outputURL.path))
 
-            // Verify the output file exists and is valid JSON
-            XCTAssertTrue(FileManager.default.fileExists(atPath: outputURL.path))
+        let data = try Data(contentsOf: outputURL)
+        let capturedData = try JSONDecoder().decode(CapturedPoseData.self, from: data)
 
-            let data = try Data(contentsOf: outputURL)
-            let capturedData = try JSONDecoder().decode(CapturedPoseData.self, from: data)
+        print("  Video: \(capturedData.videoInfo.filename)")
+        print("  Duration: \(String(format: "%.2f", capturedData.videoInfo.duration))s")
+        print("  Frames captured: \(capturedData.frames.count)")
 
-            print("  Video: \(capturedData.videoInfo.filename)")
-            print("  Duration: \(String(format: "%.2f", capturedData.videoInfo.duration))s")
-            print("  Frames captured: \(capturedData.frames.count)")
+        let observationCounts = capturedData.frames.map { $0.observations.count }
+        let avgObservations = observationCounts.isEmpty ? 0 : Double(observationCounts.reduce(0, +)) / Double(observationCounts.count)
+        print("  Avg observations per frame: \(String(format: "%.1f", avgObservations))")
 
-            let observationCounts = capturedData.frames.map { $0.observations.count }
-            let avgObservations = observationCounts.isEmpty ? 0 : Double(observationCounts.reduce(0, +)) / Double(observationCounts.count)
-            print("  Avg observations per frame: \(String(format: "%.1f", avgObservations))")
+        XCTAssertGreaterThan(capturedData.frames.count, 0, "Should have captured at least one frame")
+    }
 
-            XCTAssertGreaterThan(capturedData.frames.count, 0, "Should have captured at least one frame")
-        }
+    func testCapture_IMG_1118() throws {
+        try captureVideoPoses(videoName: "IMG_1118")
+    }
 
-        print("\n=== Pose capture complete ===")
-        print("Copy .poses.json files from device Documents to InstantReplayTests/Resources/")
-        print("Via Finder: Window > Devices and Simulators > select device > InstantReplay > download Documents")
+    func testCapture_IMG_1940() throws {
+        try captureVideoPoses(videoName: "IMG_1940")
+    }
+
+    func testCapture_IMG_1988() throws {
+        try captureVideoPoses(videoName: "IMG_1988")
+    }
+
+    func testCapture_IMG_4584() throws {
+        try captureVideoPoses(videoName: "IMG_4584")
+    }
+
+    func testCapture_IMG_4927() throws {
+        try captureVideoPoses(videoName: "IMG_4927")
     }
 }

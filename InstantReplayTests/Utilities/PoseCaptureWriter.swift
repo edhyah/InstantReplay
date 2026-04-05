@@ -6,6 +6,7 @@ import Vision
 final class PoseCaptureWriter {
     private let videoURL: URL
     private let outputURL: URL
+    private let poseRequest = VNDetectHumanBodyPoseRequest()
 
     init(videoURL: URL, outputURL: URL) {
         self.videoURL = videoURL
@@ -25,7 +26,7 @@ final class PoseCaptureWriter {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ]
         let trackOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: outputSettings)
-        trackOutput.alwaysCopiesSampleData = false
+        trackOutput.alwaysCopiesSampleData = true
 
         guard reader.canAdd(trackOutput) else {
             throw PoseCaptureError.cannotAddTrackOutput
@@ -41,34 +42,47 @@ final class PoseCaptureWriter {
         var frameIndex = 0
         var processedCount = 0
 
-        while reader.status == .reading {
-            guard let sampleBuffer = trackOutput.copyNextSampleBuffer() else {
-                break
-            }
-
-            // Subsample to ~15fps
-            if frameIndex % subsampleRate == 0 {
-                let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-                let timestampSeconds = CMTimeGetSeconds(timestamp)
-
-                if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-                    let observations = estimatePoses(pixelBuffer)
-                    let capturedObservations = observations.map { obs in
-                        CapturedObservation(
-                            torsoCentroid: CodablePoint(obs.torsoCentroid),
-                            joints: JointNameCodable.encode(obs.jointPoints)
-                        )
-                    }
-                    frames.append(CapturedFrame(timestamp: timestampSeconds, observations: capturedObservations))
+        var shouldContinue = true
+        while reader.status == .reading && shouldContinue {
+            autoreleasepool {
+                guard let sampleBuffer = trackOutput.copyNextSampleBuffer() else {
+                    shouldContinue = false
+                    return
                 }
-                processedCount += 1
-            }
 
-            frameIndex += 1
+                // Subsample to ~15fps
+                if frameIndex % subsampleRate == 0 {
+                    let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                    let timestampSeconds = CMTimeGetSeconds(timestamp)
+
+                    if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+                        let observations = estimatePoses(pixelBuffer)
+                        let capturedObservations = observations.map { obs in
+                            CapturedObservation(
+                                torsoCentroid: CodablePoint(obs.torsoCentroid),
+                                joints: JointNameCodable.encode(obs.jointPoints)
+                            )
+                        }
+                        frames.append(CapturedFrame(timestamp: timestampSeconds, observations: capturedObservations))
+                    }
+                    processedCount += 1
+                }
+
+                frameIndex += 1
+            }
         }
 
-        if reader.status == .failed {
-            throw PoseCaptureError.readerFailed(reader.error)
+        let readerFailed = reader.status == .failed
+        let readerError = reader.error
+
+        // Cancel the reader to properly release resources before deallocation
+        reader.cancelReading()
+
+        // Give the system a moment to clean up AVFoundation/Vision resources
+        Thread.sleep(forTimeInterval: 0.1)
+
+        if readerFailed {
+            throw PoseCaptureError.readerFailed(readerError)
         }
 
         let videoInfo = VideoInfo(
@@ -87,16 +101,15 @@ final class PoseCaptureWriter {
     }
 
     private func estimatePoses(_ pixelBuffer: CVPixelBuffer) -> [CapturedBodyObservation] {
-        let request = VNDetectHumanBodyPoseRequest()
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
 
         do {
-            try handler.perform([request])
+            try handler.perform([poseRequest])
         } catch {
             return []
         }
 
-        guard let results = request.results, !results.isEmpty else {
+        guard let results = poseRequest.results, !results.isEmpty else {
             return []
         }
 

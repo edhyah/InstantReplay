@@ -1,22 +1,4 @@
-# InstantReplay — Developer Notes
-
-## Test Targets
-
-### InstantReplayTests (iOS, requires device)
-
-Runs on a real iOS device. Contains **PoseCaptureTests** which captures pose data from videos and saves `.poses.json` files for offline algorithm testing.
-
-Workflow: Run `PoseCaptureTests` on device once to generate pose data, then copy output files to `InstantReplayMacTests/Resources/` for fast iteration.
-
-### InstantReplayMacTests (macOS, no simulator)
-
-Runs natively on Mac in ~1 second (vs 2-3+ minutes with iOS simulator). Used for fast iteration on detection algorithms.
-
-```bash
-xcodebuild test -scheme InstantReplayMacTests -destination 'platform=macOS'
-```
-
-**Resources:** Place `.poses.json` and ground truth `.json` files in `Resources/`. Tests auto-discover all pose files in this directory.
+# InstantReplay — Architecture Notes
 
 ## Shared Code Architecture
 
@@ -61,4 +43,23 @@ The camera is perpendicular to movement. Left and right body parts overlap from 
 ### Segment overlap prevents dropped frames
 
 RollingBufferManager writes to two AVAssetWriter instances simultaneously for ~1 second during rotation. Both the old and new segment receive frames during the overlap window, ensuring no gaps in the recorded timeline.
+
+---
+
+## Running Tests
+
+Run tests directly via xcodebuild rather than asking the user:
+
+```bash
+# Mac tests (pose detection algorithms, no device needed)
+xcodebuild test -scheme InstantReplayMacTests -destination "platform=macOS"
+
+# iOS tests on iPad (Vision ML requires real device)
+xcodebuild test -scheme InstantReplay -destination "platform=iOS,id=00008110-001A31621186801E" -only-testing:InstantReplayTests
+```
+
+For iOS, use the device ID from `xcrun devicectl list devices` if the iPad isn't found.
+
+Do not use the iOS Simulator, as the Simulator cannot run body pose detection.
+If there's no available iPad to test on, rely on the human to test.
 
