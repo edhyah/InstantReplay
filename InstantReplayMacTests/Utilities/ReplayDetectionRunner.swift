@@ -80,6 +80,7 @@ final class ReplayDetectionRunner {
         "peak": 0.2,
         "landing": 0.2
     ]
+    private let stepTolerance: TimeInterval = 0.20
 
     func run(
         reader: PoseReplayReader,
@@ -90,6 +91,7 @@ final class ReplayDetectionRunner {
         let mockTime = MockTimeProvider()
         let bodyTracker = BodyTracker()
         let stateMachine = ApproachDetectorStateMachine(timeProvider: mockTime, thresholds: thresholds)
+        let stepDetector = StepDetector()
         print("DEBUG Runner: Created state machine")
 
         var detected = DetectedEvents()
@@ -134,8 +136,36 @@ final class ReplayDetectionRunner {
                 $0.id == trackingResult.dominantMoverID
             }
 
+            // Record ankle data for step detection
+            if let mover = dominantMover {
+                stepDetector.recordFrame(timestamp: frame.timestamp, jointPoints: mover.jointPoints)
+            }
+
             let cmTimestamp = CMTime(seconds: frame.timestamp, preferredTimescale: 600)
             _ = stateMachine.step(dominantMover: dominantMover, timestamp: cmTimestamp)
+        }
+
+        // Detect steps for each approach
+        // Use a wider window since state machine's approachStart is often late
+        // Look back 2 seconds from takeoff to capture all 4 steps
+        let stepLookbackWindow: TimeInterval = 2.0
+        let approachCount = detected.takeoffs.count
+        for i in 0..<approachCount {
+            let takeoff = detected.takeoffs[i].timestamp
+            let approachStart = takeoff - stepLookbackWindow
+            let detectedSteps = stepDetector.detectSteps(approachStart: approachStart, takeoff: takeoff)
+
+            if detectedSteps.count == 4 {
+                let stepTypes: [StepType] = [.first, .second, .orientation, .plant]
+                let stepEvents = zip(stepTypes, detectedSteps).map { type, step in
+                    StepEvent(
+                        type: type,
+                        timestamp: step.timestamp,
+                        foot: DetectedFoot(rawValue: step.foot) ?? .unknown
+                    )
+                }
+                detected.steps.append(stepEvents)
+            }
         }
 
         // Compare with ground truth
@@ -172,14 +202,58 @@ final class ReplayDetectionRunner {
                 tolerance: phaseTolerance["landing"]!
             )
 
+            // Compare steps
+            let approachesWithSteps = truth.approaches.filter { $0.steps != nil }
+            for (i, approach) in approachesWithSteps.enumerated() {
+                guard let expectedSteps = approach.steps else { continue }
+                var stepComparisons: [StepComparison] = []
+
+                let stepTypes: [(String, StepLabel)] = [
+                    ("first", expectedSteps.first),
+                    ("second", expectedSteps.second),
+                    ("orientation", expectedSteps.orientation),
+                    ("plant", expectedSteps.plant)
+                ]
+
+                for (j, (typeName, expected)) in stepTypes.enumerated() {
+                    let detectedStep: StepEvent? = {
+                        guard i < detected.steps.count, j < detected.steps[i].count else { return nil }
+                        return detected.steps[i][j]
+                    }()
+
+                    let delta = detectedStep.map { abs($0.timestamp - expected.timestamp) }
+                    let withinTolerance = delta.map { $0 <= stepTolerance } ?? false
+                    let footMatch: Bool = {
+                        guard let detected = detectedStep else { return false }
+                        return detected.foot.rawValue == expected.foot.rawValue
+                    }()
+
+                    stepComparisons.append(StepComparison(
+                        stepType: typeName,
+                        detected: detectedStep?.timestamp,
+                        expected: expected.timestamp,
+                        delta: delta,
+                        withinTolerance: withinTolerance,
+                        footMatch: footMatch
+                    ))
+                }
+
+                errors.steps.append(stepComparisons)
+            }
+
             // Check if all comparisons pass
             let allComparisons = errors.approachStart + errors.takeoff + errors.peak + errors.landing
             let countMismatch = detected.approachStarts.count != truth.approaches.count
                 || detected.takeoffs.count != truth.approaches.count
                 || detected.peaks.count != truth.approaches.count
                 || detected.landings.count != truth.approaches.count
-            passed = allComparisons.allSatisfy { $0.withinTolerance } && !countMismatch
+            let stepsPass = errors.steps.allSatisfy { $0.allSatisfy { $0.withinTolerance && $0.footMatch } }
+            let stepCountMatch = detected.steps.count == approachesWithSteps.count
+            passed = allComparisons.allSatisfy { $0.withinTolerance } && !countMismatch && stepsPass && stepCountMatch
         }
+
+        // Write step detector debug log
+        stepDetector.writeDebugLog(to: "/tmp/step_detector_debug.log")
 
         return ReplayDetectionResult(
             video: reader.videoInfo.filename,
