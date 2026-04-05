@@ -37,6 +37,8 @@ final class VideoFileProcessor: NSObject {
     private var lastFrameTime: CFTimeInterval = 0
     private var fpsWindowStartTime: CFTimeInterval = 0
     private var fpsWindowFrameCount: Int = 0
+    private var playbackStartTime: CFTimeInterval = 0
+    private var videoStartTimestamp: CMTime = .zero
 
     // Calculate subsampling rate based on video frame rate to achieve ~15fps detection
     private var poseSubsamplingRate: Int {
@@ -102,6 +104,8 @@ final class VideoFileProcessor: NSObject {
         fpsWindowStartTime = 0
         fpsWindowFrameCount = 0
         measuredFPS = 0
+        playbackStartTime = 0
+        videoStartTimestamp = .zero
     }
 
     func reset() {
@@ -155,13 +159,15 @@ final class VideoFileProcessor: NSObject {
         displayLink?.invalidate()
 
         let link = CADisplayLink(target: self, selector: #selector(displayLinkFired))
-        // Limit to video's frame rate
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: Float(videoFrameRate), preferred: Float(videoFrameRate))
+        // Run at max refresh rate to handle high frame rate videos
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
         displayLink = link
         lastFrameTime = CACurrentMediaTime()
         fpsWindowStartTime = lastFrameTime
-        debugLog("[VideoFileProcessor] displayLink started, preferredRate=\(videoFrameRate)")
+        playbackStartTime = lastFrameTime
+        videoStartTimestamp = .zero
+        debugLog("[VideoFileProcessor] displayLink started, videoFrameRate=\(videoFrameRate)")
     }
 
     @objc private func displayLinkFired(_ link: CADisplayLink) {
@@ -193,16 +199,48 @@ final class VideoFileProcessor: NSObject {
             return
         }
 
-        guard let sampleBuffer = output.copyNextSampleBuffer() else {
-            debugLog("[VideoFileProcessor] processNextFrame: no more sample buffers, video ended")
-            DispatchQueue.main.async { [weak self] in
-                self?.handlePlaybackComplete()
+        // Calculate target video time based on elapsed real time
+        let currentTime = CACurrentMediaTime()
+        let elapsedRealTime = currentTime - playbackStartTime
+        let targetVideoTime = CMTime(seconds: elapsedRealTime, preferredTimescale: 600)
+
+        // Read frames until we catch up to the target time
+        var latestBuffer: CMSampleBuffer?
+        var latestTimestamp: CMTime = .zero
+
+        while true {
+            guard let sampleBuffer = output.copyNextSampleBuffer() else {
+                debugLog("[VideoFileProcessor] processNextFrame: no more sample buffers, video ended")
+                DispatchQueue.main.async { [weak self] in
+                    self?.handlePlaybackComplete()
+                }
+                return
             }
-            return
+
+            let frameTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+            // Track the first frame's timestamp to handle videos that don't start at 0
+            if videoStartTimestamp == .zero {
+                videoStartTimestamp = frameTimestamp
+                playbackStartTime = currentTime  // Reset playback start to sync with first frame
+            }
+
+            let adjustedTimestamp = CMTimeSubtract(frameTimestamp, videoStartTimestamp)
+            latestBuffer = sampleBuffer
+            latestTimestamp = frameTimestamp
+
+            // If this frame is at or past the target time, use it
+            if CMTimeCompare(adjustedTimestamp, targetVideoTime) >= 0 {
+                break
+            }
+
+            // Otherwise, continue reading (skip this frame)
+            frameCounter += 1
         }
 
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard let sampleBuffer = latestBuffer,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let timestamp = latestTimestamp
 
         // Update FPS measurement
         let now = CACurrentMediaTime()
@@ -304,7 +342,8 @@ final class VideoFileProcessor: NSObject {
                 let clipAsset = ClipAsset(
                     asset: composition,
                     timeRange: CMTimeRangeMake(start: .zero, duration: duration),
-                    referencedURLs: [url]
+                    referencedURLs: [url],
+                    clipOriginTime: clampedStart
                 )
 
                 await MainActor.run { completion(clipAsset) }
