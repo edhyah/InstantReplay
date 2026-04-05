@@ -46,53 +46,69 @@ final class StepDetector: Sendable {
             return []
         }
 
-        // Combine ankle signals - use whichever ankle is lower (higher Y)
-        var combinedSignal: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
+        // Build separate signals for left and right ankles
+        var leftSignal: [(timestamp: TimeInterval, y: CGFloat)] = []
+        var rightSignal: [(timestamp: TimeInterval, y: CGFloat)] = []
+
         for frame in approachFrames {
-            let leftY = frame.leftAnkleY ?? 0
-            let rightY = frame.rightAnkleY ?? 0
-
-            if leftY > rightY && frame.leftAnkleY != nil {
-                combinedSignal.append((timestamp: frame.timestamp, y: leftY, foot: "left"))
-            } else if frame.rightAnkleY != nil {
-                combinedSignal.append((timestamp: frame.timestamp, y: rightY, foot: "right"))
+            if let leftY = frame.leftAnkleY {
+                leftSignal.append((timestamp: frame.timestamp, y: leftY))
+            }
+            if let rightY = frame.rightAnkleY {
+                rightSignal.append((timestamp: frame.timestamp, y: rightY))
             }
         }
 
-        log("Combined signal count: \(combinedSignal.count)")
-        guard combinedSignal.count >= 4 else {
-            log("Not enough combined signal")
-            return []
-        }
+        log("Left signal count: \(leftSignal.count), Right signal count: \(rightSignal.count)")
 
-        // Find local maxima in Y (foot plants - foot is at lowest point on screen = highest Y)
-        var peaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
+        // Find peaks in each signal
+        let leftPeaks = findPeaks(in: leftSignal, foot: "left")
+        let rightPeaks = findPeaks(in: rightSignal, foot: "right")
 
-        for i in 1..<(combinedSignal.count - 1) {
-            let prev = combinedSignal[i - 1].y
-            let curr = combinedSignal[i].y
-            let next = combinedSignal[i + 1].y
+        log("Left peaks: \(leftPeaks.count), Right peaks: \(rightPeaks.count)")
 
-            // Local maximum in Y (foot plant)
-            if curr > prev && curr >= next {
-                peaks.append(combinedSignal[i])
-            }
-        }
+        // Merge all peaks and sort by timestamp
+        var allPeaks = leftPeaks + rightPeaks
+        allPeaks.sort { $0.timestamp < $1.timestamp }
 
-        log("Found \(peaks.count) peaks")
-        for peak in peaks {
+        log("Total peaks: \(allPeaks.count)")
+        for peak in allPeaks {
             log("  Peak at t=\(peak.timestamp), y=\(peak.y), foot=\(peak.foot)")
         }
 
         // Need at least 4 peaks for 4 steps
-        guard peaks.count >= 4 else {
+        guard allPeaks.count >= 4 else {
             log("Not enough peaks")
             return []
         }
 
-        // Take the last 4 peaks before takeoff (most reliable)
-        let lastFourPeaks = Array(peaks.suffix(4))
+        // Take the last 4 peaks (closest to takeoff - most reliable)
+        let lastFourPeaks = Array(allPeaks.suffix(4))
+
+        log("Selected peaks:")
+        for peak in lastFourPeaks {
+            log("  Selected: t=\(peak.timestamp), y=\(peak.y), foot=\(peak.foot)")
+        }
 
         return lastFourPeaks.map { DetectedStep(timestamp: $0.timestamp, foot: $0.foot, ankleY: $0.y) }
+    }
+
+    private func findPeaks(in signal: [(timestamp: TimeInterval, y: CGFloat)], foot: String) -> [(timestamp: TimeInterval, y: CGFloat, foot: String)] {
+        guard signal.count >= 3 else { return [] }
+
+        var peaks: [(timestamp: TimeInterval, y: CGFloat, foot: String)] = []
+
+        for i in 1..<(signal.count - 1) {
+            let prev = signal[i - 1].y
+            let curr = signal[i].y
+            let next = signal[i + 1].y
+
+            // Local maximum in Y (foot plant - foot at lowest point = highest Y in screen coords)
+            if curr > prev && curr >= next {
+                peaks.append((timestamp: signal[i].timestamp, y: signal[i].y, foot: foot))
+            }
+        }
+
+        return peaks
     }
 }
