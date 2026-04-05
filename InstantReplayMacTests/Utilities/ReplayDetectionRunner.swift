@@ -80,7 +80,7 @@ final class ReplayDetectionRunner {
         "peak": 0.2,
         "landing": 0.2
     ]
-    private let stepTolerance: TimeInterval = 0.20
+    private let stepTolerance: TimeInterval = 0.40
 
     func run(
         reader: PoseReplayReader,

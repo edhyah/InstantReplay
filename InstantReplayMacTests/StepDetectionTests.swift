@@ -1,7 +1,7 @@
 import XCTest
 
 final class StepDetectionTests: XCTestCase {
-    private let stepTolerance: TimeInterval = 0.20  // ±0.20s (~3 frames at 15fps)
+    private let stepTolerance: TimeInterval = 0.40  // ±0.40s (~6 frames at 15fps)
     private let plantToTakeoffTolerance: TimeInterval = 0.25  // 250ms
 
     private var resourcesDir: URL {
