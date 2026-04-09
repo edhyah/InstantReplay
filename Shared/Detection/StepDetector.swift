@@ -12,8 +12,10 @@ final class StepDetector: Sendable {
     private nonisolated(unsafe) var frameData: [(timestamp: TimeInterval, leftAnkleY: CGFloat?, rightAnkleY: CGFloat?)] = []
     private nonisolated(unsafe) var debugLog: [String] = []
 
+    private let logPrefix = "[StepDetector]"
+
     private func log(_ message: String) {
-        debugLog.append(message)
+        debugLog.append("\(logPrefix) \(message)")
     }
 
     func writeDebugLog(to path: String) {
@@ -67,43 +69,53 @@ final class StepDetector: Sendable {
         let rightPeaks = findPeaks(in: rightSignal, foot: "right")
 
         log("Left peaks: \(leftPeaks.count), Right peaks: \(rightPeaks.count)")
-        for peak in (leftPeaks + rightPeaks).sorted(by: { $0.timestamp < $1.timestamp }) {
-            log("  Peak at t=\(peak.timestamp), y=\(peak.y), foot=\(peak.foot)")
+        log("--- All detected peaks (sorted by timestamp) ---")
+        for (index, peak) in (leftPeaks + rightPeaks).sorted(by: { $0.timestamp < $1.timestamp }).enumerated() {
+            log("  Peak[\(index)] foot=\(peak.foot) timestamp=\(String(format: "%.4f", peak.timestamp)) y=\(String(format: "%.6f", peak.y))")
         }
+        log("--- End of detected peaks ---")
 
         // Merge all peaks - side-view camera makes left/right ankle distinction unreliable
         var allPeaks = leftPeaks + rightPeaks
         allPeaks.sort { $0.timestamp < $1.timestamp }
 
+        log("Merged peak count: \(allPeaks.count) (need >= 4)")
+
         guard allPeaks.count >= 4 else {
-            log("Not enough peaks")
+            log("Not enough peaks after merge (\(allPeaks.count) < 4), aborting")
             return []
         }
 
         // Find best sequence using timing-based approach
         if let sequence = findBestTimedSequence(peaks: allPeaks, takeoff: takeoff) {
-            log("Found best-timed sequence")
+            log("Found best-timed sequence of \(sequence.count) steps")
+            log("--- Selected step sequence (timed) ---")
             // Always assign expected foot pattern: right, left, right, left
             let footPattern = ["right", "left", "right", "left"]
+            let stepLabels = ["first", "second", "orientation", "plant"]
             var result: [DetectedStep] = []
             for (i, peak) in sequence.enumerated() {
-                log("  Selected: t=\(peak.timestamp), y=\(peak.y), assigned foot=\(footPattern[i])")
+                log("  Step[\(i)] \(stepLabels[i]): timestamp=\(String(format: "%.4f", peak.timestamp)) y=\(String(format: "%.6f", peak.y)) assignedFoot=\(footPattern[i])")
                 result.append(DetectedStep(timestamp: peak.timestamp, foot: footPattern[i], ankleY: peak.y))
             }
+            log("--- End of selected step sequence ---")
             return result
         }
 
         // Fallback: select 4 well-distributed peaks
-        log("Using fallback selection")
+        log("Timed sequence search failed, using fallback well-distributed selection")
         let selectedPeaks = selectWellDistributedPeaks(allPeaks, count: 4, minSpacing: 0.1)
 
+        log("--- Selected step sequence (fallback) ---")
         // Always assign expected foot pattern: right, left, right, left
         let footPattern = ["right", "left", "right", "left"]
+        let stepLabels = ["first", "second", "orientation", "plant"]
         var result: [DetectedStep] = []
         for (i, peak) in selectedPeaks.enumerated() {
-            log("  Fallback selected: t=\(peak.timestamp), y=\(peak.y), assigned foot=\(footPattern[i])")
+            log("  Step[\(i)] \(stepLabels[i]): timestamp=\(String(format: "%.4f", peak.timestamp)) y=\(String(format: "%.6f", peak.y)) assignedFoot=\(footPattern[i])")
             result.append(DetectedStep(timestamp: peak.timestamp, foot: footPattern[i], ankleY: peak.y))
         }
+        log("--- End of selected step sequence (fallback) ---")
         return result
     }
 
@@ -132,11 +144,16 @@ final class StepDetector: Sendable {
     ) -> [(timestamp: TimeInterval, y: CGFloat, foot: String)]? {
         // Find plant: latest peak within 0.3s of takeoff
         let plantCandidates = peaks.filter { takeoff - $0.timestamp <= 0.3 && takeoff - $0.timestamp >= 0 }
+        log("Plant candidates within 0.3s of takeoff (\(String(format: "%.4f", takeoff))): \(plantCandidates.count)")
+        for (index, candidate) in plantCandidates.enumerated() {
+            log("  PlantCandidate[\(index)] timestamp=\(String(format: "%.4f", candidate.timestamp)) y=\(String(format: "%.6f", candidate.y)) deltaToTakeoff=\(String(format: "%.4f", takeoff - candidate.timestamp))")
+        }
+
         guard let plant = plantCandidates.max(by: { $0.timestamp < $1.timestamp }) else {
             log("No plant found within 0.3s of takeoff")
             return nil
         }
-        log("Found plant at \(plant.timestamp)")
+        log("Selected plant: timestamp=\(String(format: "%.4f", plant.timestamp)) y=\(String(format: "%.6f", plant.y))")
 
         // Get peaks between start and plant for finding first, second, orientation
         let middlePeaks = peaks.filter {
@@ -144,8 +161,13 @@ final class StepDetector: Sendable {
             $0.timestamp > takeoff - 2.0  // reasonable approach start
         }
 
+        log("Middle peaks (between start and plant): \(middlePeaks.count) (need >= 3)")
+        for (index, mp) in middlePeaks.enumerated() {
+            log("  MiddlePeak[\(index)] timestamp=\(String(format: "%.4f", mp.timestamp)) y=\(String(format: "%.6f", mp.y))")
+        }
+
         guard middlePeaks.count >= 3 else {
-            log("Not enough middle peaks")
+            log("Not enough middle peaks (\(middlePeaks.count) < 3), aborting timed sequence")
             return nil
         }
 
@@ -155,8 +177,13 @@ final class StepDetector: Sendable {
             $0.timestamp > plant.timestamp - 1.5  // at most 1.5s before plant
         }
 
+        log("First step candidates (0.7s-1.5s before plant): \(firstCandidates.count)")
+        for (index, fc) in firstCandidates.enumerated() {
+            log("  FirstCandidate[\(index)] timestamp=\(String(format: "%.4f", fc.timestamp)) y=\(String(format: "%.6f", fc.y)) deltaToPlant=\(String(format: "%.4f", plant.timestamp - fc.timestamp))")
+        }
+
         guard !firstCandidates.isEmpty else {
-            log("No first step candidates")
+            log("No first step candidates found, aborting timed sequence")
             return nil
         }
 
@@ -167,12 +194,18 @@ final class StepDetector: Sendable {
         for first in firstCandidates {
             if let seq = tryBuildSequence(first: first, plant: plant, peaks: middlePeaks) {
                 let score = scoreSequence(seq, takeoff: takeoff)
-                log("First=\(first.timestamp): score=\(score)")
+                log("Candidate sequence starting at first=\(String(format: "%.4f", first.timestamp)): score=\(String(format: "%.4f", score)) steps=[\(seq.map { String(format: "%.4f", $0.timestamp) }.joined(separator: ", "))]")
                 if score < bestScore {
                     bestScore = score
                     bestSequence = seq
                 }
             }
+        }
+
+        if let best = bestSequence {
+            log("Best timed sequence found with score=\(String(format: "%.4f", bestScore)): [\(best.map { String(format: "%.4f", $0.timestamp) }.joined(separator: ", "))]")
+        } else {
+            log("No valid timed sequence found from \(firstCandidates.count) first-step candidates")
         }
 
         return bestSequence
