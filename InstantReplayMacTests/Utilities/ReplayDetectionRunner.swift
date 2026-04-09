@@ -252,8 +252,10 @@ final class ReplayDetectionRunner {
             passed = allComparisons.allSatisfy { $0.withinTolerance } && !countMismatch && stepsPass && stepCountMatch
         }
 
-        // Write step detector debug log
+        // Write step detector debug log (only available in debug builds)
+        #if DEBUG
         stepDetector.writeDebugLog(to: "/tmp/step_detector_debug.log")
+        #endif
 
         // Log step comparison results
         var stepDebug: [String] = []

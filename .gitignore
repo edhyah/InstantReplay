@@ -83,3 +83,6 @@ fastlane/test_output
 
 iOSInjectionProject/
 
+# Development logs
+results.log
+

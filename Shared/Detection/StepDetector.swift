@@ -16,10 +16,12 @@ final class StepDetector: Sendable {
         debugLog.append(message)
     }
 
+    #if DEBUG
     func writeDebugLog(to path: String) {
         let content = debugLog.joined(separator: "\n")
         try? content.write(toFile: path, atomically: true, encoding: .utf8)
     }
+    #endif
 
     func recordFrame(timestamp: TimeInterval, jointPoints: [VNHumanBodyPoseObservation.JointName: CGPoint]) {
         let leftAnkleY = jointPoints[.leftAnkle]?.y
