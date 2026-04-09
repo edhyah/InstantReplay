@@ -1,0 +1,30 @@
+[project]
+name = "pose-estimation-eval"
+version = "0.1.0"
+description = "Compare pose estimation models against labeled volleyball approach videos"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "mediapipe>=0.10",
+    "tensorflow-lite-support>=0.4; platform_machine != 'aarch64'",
+    "ultralytics>=8.3",
+    "onnxruntime>=1.16",
+    "pytest>=7.4",
+    "tabulate>=0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
