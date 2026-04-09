@@ -30,8 +30,10 @@ final class DebugLog: @unchecked Sendable {
         }
         lock.unlock()
 
-        // Continue printing to console for Xcode debugging
+        // Print to console only in debug builds to avoid leaking internal state
+        #if DEBUG
         print(message)
+        #endif
     }
 
     func allEntries() -> [LogEntry] {

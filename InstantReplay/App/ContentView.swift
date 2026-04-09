@@ -286,7 +286,7 @@ struct ContentView: View {
     private func logDeviceInfo() {
         let device = UIDevice.current
         debugLog("[Device] model=\(device.model), systemVersion=\(device.systemVersion)")
-        debugLog("[Device] name=\(device.name)")
+        // Device name omitted from logs to avoid leaking user's real name
         debugLog("[Device] systemName=\(device.systemName)")
 
         // Log machine identifier for more detail
