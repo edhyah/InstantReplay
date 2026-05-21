@@ -7,6 +7,11 @@ struct DetectionUpdate: Sendable {
     let captureFPS: Double
 }
 
+enum CameraPosition {
+    case front
+    case back
+}
+
 @Observable
 final class CameraManager: NSObject {
     nonisolated(unsafe) let captureSession = AVCaptureSession()
@@ -17,6 +22,8 @@ final class CameraManager: NSObject {
 
     nonisolated(unsafe) var onDetectionUpdate: (@Sendable (DetectionUpdate) -> Void)?
     nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
+
+    private(set) var currentPosition: CameraPosition = .back
 
     private var isConfigured = false
     private nonisolated(unsafe) var frameCounter: Int = 0
@@ -37,8 +44,9 @@ final class CameraManager: NSObject {
         captureSession.beginConfiguration()
         captureSession.sessionPreset = .high
 
-        // Add rear camera input
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+        // Add camera input based on current position
+        let avPosition: AVCaptureDevice.Position = currentPosition == .front ? .front : .back
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avPosition) else {
             captureSession.commitConfiguration()
             return
         }
@@ -97,6 +105,59 @@ final class CameraManager: NSObject {
         }
     }
 
+    func switchCamera() {
+        sessionQueue.async { [self] in
+            captureSession.beginConfiguration()
+
+            // Remove current camera input
+            for input in captureSession.inputs {
+                if let deviceInput = input as? AVCaptureDeviceInput,
+                   deviceInput.device.hasMediaType(.video) {
+                    captureSession.removeInput(deviceInput)
+                }
+            }
+
+            // Toggle position
+            let newPosition: CameraPosition = currentPosition == .back ? .front : .back
+            let avPosition: AVCaptureDevice.Position = newPosition == .front ? .front : .back
+
+            // Add new camera input
+            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avPosition) else {
+                captureSession.commitConfiguration()
+                return
+            }
+
+            do {
+                let input = try AVCaptureDeviceInput(device: device)
+                if captureSession.canAddInput(input) {
+                    captureSession.addInput(input)
+                }
+            } catch {
+                captureSession.commitConfiguration()
+                return
+            }
+
+            captureSession.commitConfiguration()
+
+            // Configure 60fps for the new device
+            configure60fps(for: device)
+
+            // Update position on main thread (Observable property)
+            DispatchQueue.main.async {
+                self.currentPosition = newPosition
+            }
+
+            // Reset detection pipeline and rolling buffer (old frames are from different camera)
+            detectionPipeline.reset()
+            rollingBuffer.reset()
+            rollingBuffer.setFrontCamera(newPosition == .front)
+            frameCounter = 0
+            captureWindowFrameCount = 0
+            captureWindowStartTime = 0
+            measuredCaptureFPS = 0
+        }
+    }
+
     func start() {
         sessionQueue.async { [self] in
             if !self.captureSession.isRunning {
@@ -150,6 +211,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
             let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             nonisolated(unsafe) let buffer = pixelBuffer
+            let isFrontCamera = currentPosition == .front
             detectionQueue.async { [self] in
                 self.detectionPipeline.onMovementDetected = { [self] event in
                     self.onMovementDetected?(event)
@@ -165,7 +227,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
                     self.onDetectionUpdate?(update)
                 }
 
-                self.detectionPipeline.processFrame(buffer, timestamp: timestamp)
+                self.detectionPipeline.processFrame(buffer, timestamp: timestamp, isFrontCamera: isFrontCamera)
             }
         }
     }

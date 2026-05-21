@@ -76,6 +76,7 @@ final class ClipExtractor: @unchecked Sendable {
         }
 
         var insertionTime = CMTime.zero
+        var hasSetTransform = false
 
         for segment in relevantSegments {
             let asset = AVURLAsset(url: segment.fileURL)
@@ -84,6 +85,12 @@ final class ClipExtractor: @unchecked Sendable {
             guard let assetTrack = tracks.first else {
                 debugLog("[ClipExtractor]   skipping — no video track")
                 continue
+            }
+
+            // Copy the transform from the first source track (preserves rotation for front camera)
+            if !hasSetTransform {
+                compositionTrack.preferredTransform = assetTrack.preferredTransform
+                hasSetTransform = true
             }
 
             let segStart = segment.startTimestamp

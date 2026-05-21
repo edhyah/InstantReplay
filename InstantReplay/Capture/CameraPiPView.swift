@@ -11,18 +11,39 @@ struct CameraPiPView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: PiPContainerView, context: Context) {}
+    func updateUIView(_ uiView: PiPContainerView, context: Context) {
+        uiView.cameraPosition = cameraManager.currentPosition
+    }
 }
 
 class PiPContainerView: UIView {
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
     var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
 
+    var cameraPosition: CameraPosition = .back {
+        didSet {
+            updateConnectionSettings()
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
-        if let connection = previewLayer.connection,
-           connection.isVideoRotationAngleSupported(0) {
-            connection.videoRotationAngle = 0
+        updateConnectionSettings()
+    }
+
+    private func updateConnectionSettings() {
+        guard let connection = previewLayer.connection else { return }
+
+        // Set rotation angle - front camera needs 180 to appear right-side up
+        let rotationAngle: CGFloat = cameraPosition == .front ? 180 : 0
+        if connection.isVideoRotationAngleSupported(rotationAngle) {
+            connection.videoRotationAngle = rotationAngle
+        }
+
+        // Set mirroring - front camera should be mirrored for selfie mode
+        if connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = cameraPosition == .front
         }
     }
 }

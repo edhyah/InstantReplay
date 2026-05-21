@@ -24,6 +24,10 @@ final class DetectionPipeline: MovementDetector, @unchecked Sendable {
     }
 
     func processFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+        processFrame(pixelBuffer, timestamp: timestamp, isFrontCamera: false)
+    }
+
+    func processFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime, isFrontCamera: Bool) {
         let now = timeProvider.currentTime()
         let measuredInterval: Double
         if lastPoseTimestamp > 0 {
@@ -33,7 +37,7 @@ final class DetectionPipeline: MovementDetector, @unchecked Sendable {
         }
         lastPoseTimestamp = now
 
-        let observations = poseEstimator.estimatePoses(pixelBuffer)
+        let observations = poseEstimator.estimatePoses(pixelBuffer, isFrontCamera: isFrontCamera)
         let trackingResult = bodyTracker.update(with: observations, poseInterval: measuredInterval)
 
         let dominantMover = trackingResult.trackedBodies.first {

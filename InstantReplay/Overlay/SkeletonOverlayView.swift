@@ -18,6 +18,7 @@ final class SkeletonOverlayView: UIView {
     }
 
     weak var previewLayer: AVCaptureVideoPreviewLayer?
+    var isFrontCamera: Bool = false
 
     private let flashBorderLayer = CAShapeLayer()
 
@@ -233,9 +234,18 @@ final class SkeletonOverlayView: UIView {
     }
 
     private func convertToScreen(_ point: CGPoint) -> CGPoint {
-        if let layer = previewLayer {
-            return layer.layerPointConverted(fromCaptureDevicePoint: point)
+        // For front camera, Vision returns coordinates in rotated space (due to .down orientation)
+        // Transform back to camera space before converting to screen coordinates
+        let cameraPoint: CGPoint
+        if isFrontCamera {
+            cameraPoint = CGPoint(x: 1.0 - point.x, y: 1.0 - point.y)
+        } else {
+            cameraPoint = point
         }
-        return CGPoint(x: point.x * bounds.width, y: point.y * bounds.height)
+
+        if let layer = previewLayer {
+            return layer.layerPointConverted(fromCaptureDevicePoint: cameraPoint)
+        }
+        return CGPoint(x: cameraPoint.x * bounds.width, y: cameraPoint.y * bounds.height)
     }
 }

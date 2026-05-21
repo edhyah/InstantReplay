@@ -27,6 +27,8 @@ final class RollingBufferManager: @unchecked Sendable {
     private nonisolated(unsafe) var replayReferencedURLs: Set<URL> = []
     private let replayLock = NSLock()
 
+    private nonisolated(unsafe) var _isFrontCamera: Bool = false
+
     private let segmentDirectory: URL = {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("InstantReplaySegments", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -51,6 +53,12 @@ final class RollingBufferManager: @unchecked Sendable {
         replayLock.lock()
         replayReferencedURLs.removeAll()
         replayLock.unlock()
+    }
+
+    nonisolated func setFrontCamera(_ isFront: Bool) {
+        lock.lock()
+        _isFrontCamera = isFront
+        lock.unlock()
     }
 
     /// Forces the active segment to finalize. Blocks until finalization is complete
@@ -194,7 +202,7 @@ final class RollingBufferManager: @unchecked Sendable {
         // Remove any existing file at this path
         try? FileManager.default.removeItem(at: fileURL)
 
-        guard let writer = SegmentWriter(outputURL: fileURL, startTimestamp: timestamp, sourceFormatDescription: formatDesc) else {
+        guard let writer = SegmentWriter(outputURL: fileURL, startTimestamp: timestamp, sourceFormatDescription: formatDesc, isFrontCamera: _isFrontCamera) else {
             return
         }
 

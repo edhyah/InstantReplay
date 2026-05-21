@@ -11,7 +11,7 @@ final class SegmentWriter: @unchecked Sendable {
     private nonisolated(unsafe) var frameCount = 0
     private nonisolated(unsafe) var appendFailCount = 0
 
-    nonisolated init?(outputURL: URL, startTimestamp: CMTime, sourceFormatDescription: CMFormatDescription) {
+    nonisolated init?(outputURL: URL, startTimestamp: CMTime, sourceFormatDescription: CMFormatDescription, isFrontCamera: Bool = false) {
         self.fileURL = outputURL
         self.startTimestamp = startTimestamp
 
@@ -32,6 +32,11 @@ final class SegmentWriter: @unchecked Sendable {
 
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
         videoInput.expectsMediaDataInRealTime = true
+
+        // Apply 180 degree rotation for front camera so playback is right-side up
+        if isFrontCamera {
+            videoInput.transform = CGAffineTransform(rotationAngle: .pi)
+        }
 
         guard assetWriter.canAdd(videoInput) else {
             debugLog("[SegmentWriter] canAdd(videoInput) returned false")

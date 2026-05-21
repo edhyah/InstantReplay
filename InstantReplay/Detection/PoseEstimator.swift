@@ -1,11 +1,14 @@
+import CoreGraphics
 import CoreVideo
 import Vision
 
 final class PoseEstimator: Sendable {
-    nonisolated func estimatePoses(_ pixelBuffer: CVPixelBuffer) -> [BodyObservation] {
+    nonisolated func estimatePoses(_ pixelBuffer: CVPixelBuffer, isFrontCamera: Bool = false) -> [BodyObservation] {
         let request = VNDetectHumanBodyPoseRequest()
 
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        // Front camera pixel buffers are rotated 180 degrees relative to back camera
+        let orientation: CGImagePropertyOrientation = isFrontCamera ? .down : .up
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
         do {
             try handler.perform([request])
         } catch {

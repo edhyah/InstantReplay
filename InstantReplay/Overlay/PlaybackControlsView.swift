@@ -45,6 +45,11 @@ struct PlaybackControlsView: View {
                                     }
                                 }
 
+                            // Camera switch button (only in camera mode)
+                            if inputMode == .camera {
+                                cameraSwitchButton
+                            }
+
                             // Import button below PiP
                             importButton
                         }
@@ -261,6 +266,21 @@ struct PlaybackControlsView: View {
                 .stroke(Color.white.opacity(0.3), lineWidth: 2)
         )
         .shadow(radius: 4)
+    }
+
+    // MARK: - Camera Switch Button
+
+    private var cameraSwitchButton: some View {
+        Button {
+            cameraManager.switchCamera()
+        } label: {
+            Image(systemName: "arrow.triangle.2.circlepath.camera")
+                .font(.title2)
+                .foregroundColor(.white)
+                .padding(12)
+                .background(Color.black.opacity(0.6))
+                .clipShape(Circle())
+        }
     }
 
     // MARK: - Import Button

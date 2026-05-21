@@ -24,11 +24,21 @@ struct CameraPreviewView: UIViewRepresentable {
             }
         }
         uiView.skeletonOverlay.previewLayer = uiView.previewLayer
+        uiView.skeletonOverlay.isFrontCamera = cameraManager.currentPosition == .front
+
+        // Update camera position for rotation and mirroring
+        uiView.cameraPosition = cameraManager.currentPosition
     }
 }
 
 class PreviewContainerView: UIView {
     let skeletonOverlay = SkeletonOverlayView()
+
+    var cameraPosition: CameraPosition = .back {
+        didSet {
+            updateConnectionSettings()
+        }
+    }
 
     override class var layerClass: AnyClass {
         AVCaptureVideoPreviewLayer.self
@@ -51,9 +61,22 @@ class PreviewContainerView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         skeletonOverlay.frame = bounds
-        if let connection = previewLayer.connection,
-           connection.isVideoRotationAngleSupported(0) {
-            connection.videoRotationAngle = 0
+        updateConnectionSettings()
+    }
+
+    private func updateConnectionSettings() {
+        guard let connection = previewLayer.connection else { return }
+
+        // Set rotation angle - front camera needs 180 to appear right-side up
+        let rotationAngle: CGFloat = cameraPosition == .front ? 180 : 0
+        if connection.isVideoRotationAngleSupported(rotationAngle) {
+            connection.videoRotationAngle = rotationAngle
+        }
+
+        // Set mirroring - front camera should be mirrored for selfie mode
+        if connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = cameraPosition == .front
         }
     }
 }
