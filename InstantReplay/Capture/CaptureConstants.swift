@@ -9,7 +9,7 @@ nonisolated enum CaptureConstants {
 
     // Clip extraction
     static let clipPreRollDuration: TimeInterval = 3.0
-    static let clipPostRollDuration: TimeInterval = 0.5
-    static let clipPostLandingWait: TimeInterval = 0.5
+    static let clipPostRollDuration: TimeInterval = 1.0
+    static let clipPostJumpWait: TimeInterval = 1.0
     static let defaultPlaybackRate: Float = 0.5
 }

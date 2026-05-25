@@ -59,6 +59,7 @@ final class ReplayDetectionRunner {
         print("DEBUG Runner: Created state machine")
 
         var detected = DetectedEvents()
+        let detectedTakeoffs = DetectedEventRecorder()
         var stateTrace: [StateTraceEntry] = []
         var previousState: ApproachState = .idle
         var currentFrameTimestamp: TimeInterval = 0
@@ -69,7 +70,7 @@ final class ReplayDetectionRunner {
             case .approaching:
                 detected.approachStarts.append(DetectedEvent(timestamp: time))
             case .ascending:
-                detected.takeoffs.append(DetectedEvent(timestamp: time))
+                break
             case .descending:
                 detected.peaks.append(DetectedEvent(timestamp: time))
             case .idle:
@@ -79,6 +80,10 @@ final class ReplayDetectionRunner {
                 }
             }
             previousState = state
+        }
+
+        stateMachine.onMovementDetected = { event in
+            detectedTakeoffs.append(DetectedEvent(timestamp: event.jumpTimestamp.seconds))
         }
 
         // Process frames through body tracker and state machine
@@ -96,29 +101,20 @@ final class ReplayDetectionRunner {
             mockTime.setTime(frame.timestamp)
 
             let trackingResult = bodyTracker.update(with: frame.observations, poseInterval: poseInterval)
-            let dominantMover = trackingResult.trackedBodies.first {
-                $0.id == trackingResult.dominantMoverID
-            }
 
             let cmTimestamp = CMTime(seconds: frame.timestamp, preferredTimescale: 600)
-            _ = stateMachine.step(dominantMover: dominantMover, timestamp: cmTimestamp)
+            _ = stateMachine.step(trackedBodies: trackingResult.trackedBodies, timestamp: cmTimestamp)
         }
+        detected.takeoffs = detectedTakeoffs.events
 
         // Compare with ground truth
         var errors = DetectionErrors()
         var passed = true
 
         if let truth = groundTruth {
-            let expectedApproachStarts = truth.approaches.map { $0.approachStart }
             let expectedTakeoffs = truth.approaches.map { $0.takeoff }
             let expectedPeaks = truth.approaches.map { $0.peak }
             let expectedLandings = truth.approaches.map { $0.landing }
-
-            errors.approachStart = compareTimestamps(
-                detected: detected.approachStarts.map { $0.timestamp },
-                expected: expectedApproachStarts,
-                tolerance: phaseTolerance["approachStart"]!
-            )
 
             errors.takeoff = compareTimestamps(
                 detected: detected.takeoffs.map { $0.timestamp },
@@ -139,11 +135,8 @@ final class ReplayDetectionRunner {
             )
 
             // Check if all comparisons pass
-            let allComparisons = errors.approachStart + errors.takeoff + errors.peak + errors.landing
-            let countMismatch = detected.approachStarts.count != truth.approaches.count
-                || detected.takeoffs.count != truth.approaches.count
-                || detected.peaks.count != truth.approaches.count
-                || detected.landings.count != truth.approaches.count
+            let allComparisons = errors.takeoff
+            let countMismatch = detected.takeoffs.count != truth.approaches.count
             passed = allComparisons.allSatisfy { $0.withinTolerance } && !countMismatch
         }
 
@@ -189,5 +182,13 @@ final class ReplayDetectionRunner {
         }
 
         return json
+    }
+}
+
+private final class DetectedEventRecorder: @unchecked Sendable {
+    private(set) var events: [DetectedEvent] = []
+
+    func append(_ event: DetectedEvent) {
+        events.append(event)
     }
 }

@@ -207,10 +207,10 @@ struct ContentView: View {
         }
 
         videoProcessor.onMovementDetected = { event in
-            debugLog("[Video] Movement detected at timestamp=\(event.landingTimestamp.seconds)")
+            debugLog("[Video] Jump detected at timestamp=\(event.jumpTimestamp.seconds)")
 
             // Extract a clip around the detection timestamp
-            videoProcessor.extractClip(landingTimestamp: event.landingTimestamp) { clipAsset in
+            videoProcessor.extractClip(jumpTimestamp: event.jumpTimestamp) { clipAsset in
                 DispatchQueue.main.async {
                     if let clip = clipAsset {
                         debugLog("[Video] clip extracted, duration=\(clip.timeRange.duration.seconds)")
@@ -235,7 +235,7 @@ struct ContentView: View {
         let extractor = ClipExtractor(rollingBuffer: cameraManager.rollingBuffer)
 
         cameraManager.onMovementDetected = { event in
-            debugLog("[Replay] onMovementDetected fired, landingTimestamp=\(event.landingTimestamp.seconds)")
+            debugLog("[Replay] onMovementDetected fired, jumpTimestamp=\(event.jumpTimestamp.seconds)")
 
             let segments = cameraManager.rollingBuffer.segments
             debugLog("[Replay] segments count: \(segments.count)")
@@ -244,7 +244,7 @@ struct ContentView: View {
             }
 
             if let firstSeg = segments.first {
-                let elapsed = CMTimeGetSeconds(CMTimeSubtract(event.landingTimestamp, firstSeg.startTimestamp))
+                let elapsed = CMTimeGetSeconds(CMTimeSubtract(event.jumpTimestamp, firstSeg.startTimestamp))
                 if elapsed < 1.0 {
                     debugLog("[Replay] buffer too short (\(elapsed)s), skipping")
                     return
@@ -254,7 +254,7 @@ struct ContentView: View {
             let allURLs = Set(segments.map { $0.fileURL })
             cameraManager.rollingBuffer.markReplayReference(allURLs)
 
-            extractor.extractClip(landingTimestamp: event.landingTimestamp) { clipAsset in
+            extractor.extractClip(jumpTimestamp: event.jumpTimestamp) { clipAsset in
                 if let clip = clipAsset {
                     debugLog("[Replay] clip extracted, duration=\(clip.timeRange.duration.seconds), refs=\(clip.referencedURLs.count)")
                 } else {

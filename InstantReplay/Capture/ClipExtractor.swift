@@ -14,31 +14,31 @@ final class ClipExtractor: @unchecked Sendable {
         self.rollingBuffer = rollingBuffer
     }
 
-    /// Extracts a clip around the landing timestamp from the rolling buffer segments.
-    /// Waits for post-landing frames to flush, forces a segment rotation so the file
-    /// is readable, then builds a composition spanning [landingTime - preRoll, landingTime + postRoll].
+    /// Extracts a clip around the jump timestamp from the rolling buffer segments.
+    /// Waits for post-jump frames to flush, forces a segment rotation so the file
+    /// is readable, then builds a composition spanning [jumpTime - preRoll, jumpTime + postRoll].
     nonisolated func extractClip(
-        landingTimestamp: CMTime,
+        jumpTimestamp: CMTime,
         completion: @escaping @Sendable (ClipAsset?) -> Void
     ) {
-        let waitTime = CaptureConstants.clipPostLandingWait
-        debugLog("[ClipExtractor] waiting \(waitTime)s for post-landing frames")
+        let waitTime = CaptureConstants.clipPostJumpWait
+        debugLog("[ClipExtractor] waiting \(waitTime)s for post-jump frames")
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + waitTime) { [self] in
             debugLog("[ClipExtractor] forcing segment rotation")
             self.rollingBuffer.forceRotation {
                 debugLog("[ClipExtractor] rotation complete, building clip")
-                let result = self.buildClip(landingTimestamp: landingTimestamp)
+                let result = self.buildClip(jumpTimestamp: jumpTimestamp)
                 completion(result)
             }
         }
     }
 
-    private nonisolated func buildClip(landingTimestamp: CMTime) -> ClipAsset? {
+    private nonisolated func buildClip(jumpTimestamp: CMTime) -> ClipAsset? {
         let preRoll = CaptureConstants.clipPreRollDuration
         let postRoll = CaptureConstants.clipPostRollDuration
 
-        let idealClipStart = CMTimeSubtract(landingTimestamp, CMTimeMakeWithSeconds(preRoll, preferredTimescale: landingTimestamp.timescale))
-        let clipEnd = CMTimeAdd(landingTimestamp, CMTimeMakeWithSeconds(postRoll, preferredTimescale: landingTimestamp.timescale))
+        let idealClipStart = CMTimeSubtract(jumpTimestamp, CMTimeMakeWithSeconds(preRoll, preferredTimescale: jumpTimestamp.timescale))
+        let clipEnd = CMTimeAdd(jumpTimestamp, CMTimeMakeWithSeconds(postRoll, preferredTimescale: jumpTimestamp.timescale))
 
         let segments = rollingBuffer.segments
         debugLog("[ClipExtractor] idealClipStart=\(idealClipStart.seconds), clipEnd=\(clipEnd.seconds)")

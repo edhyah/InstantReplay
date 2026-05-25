@@ -189,8 +189,8 @@ final class SkeletonOverlayView: UIView {
         // Thresholds
         if let debug = stateMachineDebug {
             let t = debug.thresholds
-            lines.append(String(format: "Thresh H: %.2f  V up: %.2f", t.approachHorizontalVelocity, t.ascendingVerticalVelocity))
-            lines.append(String(format: "Thresh V dn: %.2f  Land: %.2f", t.descendingVerticalVelocity, t.landingVerticalMagnitude))
+            lines.append(String(format: "Jump V up: %.2f  Rise: %.2f", t.ascendingVerticalVelocity, t.jumpMinVerticalDisplacement))
+            lines.append(String(format: "V dn: %.2f  Land: %.2f", t.descendingVerticalVelocity, t.landingVerticalMagnitude))
         }
 
         // Measured FPS

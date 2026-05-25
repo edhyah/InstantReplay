@@ -26,22 +26,24 @@ final class VideoFileProcessor: NSObject {
 
     private var assetReader: AVAssetReader?
     private var trackOutput: AVAssetReaderTrackOutput?
+    private var pendingSampleBuffer: CMSampleBuffer?
     private var displayLink: CADisplayLink?
     private var videoAsset: AVAsset?
     private var currentVideoURL: URL?
+    private var firstSampleTimestamp: CMTime?
+    private var playbackStartWallTime: CFTimeInterval?
+    private var reachedEndAfterCurrentFrame: Bool = false
 
     private let processingQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.videoProcessing", qos: .userInitiated)
     private let detectionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.videoDetection", qos: .userInitiated)
 
     private var frameCounter: Int = 0
+    private var lastDetectionTimestamp: CMTime?
     private var lastFrameTime: CFTimeInterval = 0
     private var fpsWindowStartTime: CFTimeInterval = 0
     private var fpsWindowFrameCount: Int = 0
 
-    // Calculate subsampling rate based on video frame rate to achieve ~15fps detection
-    private var poseSubsamplingRate: Int {
-        max(1, Int(round(Double(videoFrameRate) / 15.0)))
-    }
+    private let targetPoseDetectionInterval: TimeInterval = 1.0 / 15.0
 
     func loadVideo(url: URL, completion: @escaping (Bool) -> Void) {
         let asset = AVAsset(url: url)
@@ -95,10 +97,15 @@ final class VideoFileProcessor: NSObject {
             self?.assetReader?.cancelReading()
             self?.assetReader = nil
             self?.trackOutput = nil
+            self?.pendingSampleBuffer = nil
+            self?.firstSampleTimestamp = nil
+            self?.playbackStartWallTime = nil
+            self?.reachedEndAfterCurrentFrame = false
         }
 
         detectionPipeline.reset()
         frameCounter = 0
+        lastDetectionTimestamp = nil
         fpsWindowStartTime = 0
         fpsWindowFrameCount = 0
         measuredFPS = 0
@@ -144,6 +151,11 @@ final class VideoFileProcessor: NSObject {
                     debugLog("[VideoFileProcessor] setupReader complete, assigning trackOutput")
                     self.assetReader = reader
                     self.trackOutput = output
+                    self.pendingSampleBuffer = nil
+                    self.firstSampleTimestamp = nil
+                    self.playbackStartWallTime = nil
+                    self.reachedEndAfterCurrentFrame = false
+                    self.lastDetectionTimestamp = nil
                 }
             } catch {
                 debugLog("[VideoFileProcessor] Failed to setup reader: \(error)")
@@ -155,8 +167,13 @@ final class VideoFileProcessor: NSObject {
         displayLink?.invalidate()
 
         let link = CADisplayLink(target: self, selector: #selector(displayLinkFired))
-        // Limit to video's frame rate
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: Float(videoFrameRate), preferred: Float(videoFrameRate))
+        // Tick at least 30 Hz so low-fps videos still render smoothly while media timestamps decide when frames advance.
+        let preferredRate = max(30, videoFrameRate)
+        link.preferredFrameRateRange = CAFrameRateRange(
+            minimum: 30,
+            maximum: preferredRate,
+            preferred: preferredRate
+        )
         link.add(to: .main, forMode: .common)
         displayLink = link
         lastFrameTime = CACurrentMediaTime()
@@ -173,6 +190,13 @@ final class VideoFileProcessor: NSObject {
     }
 
     private func processNextFrame() {
+        if reachedEndAfterCurrentFrame {
+            DispatchQueue.main.async { [weak self] in
+                self?.handlePlaybackComplete()
+            }
+            return
+        }
+
         guard let output = trackOutput else {
             // Reader not ready yet - don't restart, just skip this frame
             if frameCounter == 0 {
@@ -193,14 +217,57 @@ final class VideoFileProcessor: NSObject {
             return
         }
 
-        guard let sampleBuffer = output.copyNextSampleBuffer() else {
-            debugLog("[VideoFileProcessor] processNextFrame: no more sample buffers, video ended")
-            DispatchQueue.main.async { [weak self] in
-                self?.handlePlaybackComplete()
+        let wallNow = CACurrentMediaTime()
+        var latestDueSample: CMSampleBuffer?
+
+        if firstSampleTimestamp == nil {
+            guard let sampleBuffer = output.copyNextSampleBuffer() else {
+                debugLog("[VideoFileProcessor] processNextFrame: no more sample buffers, video ended")
+                DispatchQueue.main.async { [weak self] in
+                    self?.handlePlaybackComplete()
+                }
+                return
             }
+
+            firstSampleTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            playbackStartWallTime = wallNow
+            latestDueSample = sampleBuffer
+        } else {
+            guard let firstSampleTimestamp,
+                  let playbackStartWallTime else {
+                return
+            }
+
+            let playbackElapsed = wallNow - playbackStartWallTime
+            var sampleBuffer = pendingSampleBuffer ?? output.copyNextSampleBuffer()
+            pendingSampleBuffer = nil
+
+            while let sample = sampleBuffer {
+                let timestamp = CMSampleBufferGetPresentationTimeStamp(sample)
+                let sampleElapsed = CMTimeGetSeconds(CMTimeSubtract(timestamp, firstSampleTimestamp))
+
+                if sampleElapsed > playbackElapsed {
+                    pendingSampleBuffer = sample
+                    break
+                }
+
+                latestDueSample = sample
+                sampleBuffer = output.copyNextSampleBuffer()
+
+                if sampleBuffer == nil {
+                    reachedEndAfterCurrentFrame = true
+                }
+            }
+        }
+
+        guard let sampleBuffer = latestDueSample else {
             return
         }
 
+        displayAndDetect(sampleBuffer)
+    }
+
+    private func displayAndDetect(_ sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
@@ -217,18 +284,22 @@ final class VideoFileProcessor: NSObject {
             fpsWindowStartTime = now
         }
 
-        // Notify all frame observers
+        // Notify all frame observers with the frame that is due at the current media time.
+        let displaySampleBuffer = sampleBuffer
         DispatchQueue.main.async { [weak self] in
+            _ = displaySampleBuffer
             guard let self = self else { return }
             for callback in self.frameObservers.values {
                 callback(pixelBuffer)
             }
         }
 
-        // Subsample for pose detection
         frameCounter += 1
-        if frameCounter % poseSubsamplingRate == 0 {
+        if shouldRunPoseDetection(at: timestamp) {
+            lastDetectionTimestamp = timestamp
+            let detectionSampleBuffer = sampleBuffer
             detectionQueue.async { [weak self] in
+                _ = detectionSampleBuffer
                 guard let self = self else { return }
 
                 self.detectionPipeline.onMovementDetected = { [weak self] event in
@@ -251,13 +322,22 @@ final class VideoFileProcessor: NSObject {
         }
     }
 
+    private func shouldRunPoseDetection(at timestamp: CMTime) -> Bool {
+        guard let lastDetectionTimestamp else {
+            return true
+        }
+
+        let elapsed = CMTimeGetSeconds(CMTimeSubtract(timestamp, lastDetectionTimestamp))
+        return elapsed >= targetPoseDetectionInterval
+    }
+
     private func handlePlaybackComplete() {
         // Loop the video by restarting playback
         restartPlayback()
     }
 
-    /// Extracts a clip around the landing timestamp from the video file.
-    func extractClip(landingTimestamp: CMTime, completion: @escaping (ClipAsset?) -> Void) {
+    /// Extracts a clip around the jump timestamp from the video file.
+    func extractClip(jumpTimestamp: CMTime, completion: @escaping (ClipAsset?) -> Void) {
         guard let url = currentVideoURL else {
             completion(nil)
             return
@@ -266,8 +346,8 @@ final class VideoFileProcessor: NSObject {
         let preRoll = CaptureConstants.clipPreRollDuration
         let postRoll = CaptureConstants.clipPostRollDuration
 
-        let clipStart = CMTimeSubtract(landingTimestamp, CMTimeMakeWithSeconds(preRoll, preferredTimescale: landingTimestamp.timescale))
-        let clipEnd = CMTimeAdd(landingTimestamp, CMTimeMakeWithSeconds(postRoll, preferredTimescale: landingTimestamp.timescale))
+        let clipStart = CMTimeSubtract(jumpTimestamp, CMTimeMakeWithSeconds(preRoll, preferredTimescale: jumpTimestamp.timescale))
+        let clipEnd = CMTimeAdd(jumpTimestamp, CMTimeMakeWithSeconds(postRoll, preferredTimescale: jumpTimestamp.timescale))
 
         // Clamp to valid range (start >= 0)
         let clampedStart = CMTimeMaximum(clipStart, .zero)

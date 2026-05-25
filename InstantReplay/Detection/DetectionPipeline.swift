@@ -12,7 +12,8 @@ final class DetectionPipeline: MovementDetector, @unchecked Sendable {
     let bodyTracker = BodyTracker()
     let stateMachine: ApproachDetectorStateMachine
 
-    private nonisolated(unsafe) var lastPoseTimestamp: CFTimeInterval = 0
+    private nonisolated(unsafe) var lastPoseTimestamp: CMTime?
+    private nonisolated(unsafe) var lastPoseWallTime: CFTimeInterval = 0
     private let timeProvider: TimeProvider
 
     nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
@@ -30,32 +31,38 @@ final class DetectionPipeline: MovementDetector, @unchecked Sendable {
     func processFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime, isFrontCamera: Bool) {
         let now = timeProvider.currentTime()
         let measuredInterval: Double
-        if lastPoseTimestamp > 0 {
-            measuredInterval = now - lastPoseTimestamp
+        if let previousTimestamp = lastPoseTimestamp {
+            let mediaInterval = CMTimeGetSeconds(CMTimeSubtract(timestamp, previousTimestamp))
+            if mediaInterval > 0 {
+                measuredInterval = mediaInterval
+            } else if lastPoseWallTime > 0 {
+                measuredInterval = now - lastPoseWallTime
+            } else {
+                measuredInterval = 1.0 / 15.0
+            }
+        } else if lastPoseWallTime > 0 {
+            measuredInterval = now - lastPoseWallTime
         } else {
             measuredInterval = 1.0 / 15.0 // default to ~15fps for first frame
         }
-        lastPoseTimestamp = now
+        lastPoseTimestamp = timestamp
+        lastPoseWallTime = now
 
         let observations = poseEstimator.estimatePoses(pixelBuffer, isFrontCamera: isFrontCamera)
         let trackingResult = bodyTracker.update(with: observations, poseInterval: measuredInterval)
 
-        let dominantMover = trackingResult.trackedBodies.first {
-            $0.id == trackingResult.dominantMoverID
-        }
-
-        var didDetect = false
+        let detectionFlag = DetectionFlag()
         stateMachine.onMovementDetected = { [weak self] event in
-            didDetect = true
+            detectionFlag.value = true
             self?.onMovementDetected?(event)
         }
 
-        let debugInfo = stateMachine.step(dominantMover: dominantMover, timestamp: timestamp)
+        let debugInfo = stateMachine.step(trackedBodies: trackingResult.trackedBodies, timestamp: timestamp)
 
         let result = DetectionPipelineResult(
             trackingResult: trackingResult,
             stateMachineDebug: debugInfo,
-            didDetectMovement: didDetect
+            didDetectMovement: detectionFlag.value
         )
         onDetectionResult?(result)
     }
@@ -63,6 +70,11 @@ final class DetectionPipeline: MovementDetector, @unchecked Sendable {
     func reset() {
         bodyTracker.reset()
         stateMachine.reset()
-        lastPoseTimestamp = 0
+        lastPoseTimestamp = nil
+        lastPoseWallTime = 0
     }
+}
+
+private final class DetectionFlag: @unchecked Sendable {
+    nonisolated(unsafe) var value = false
 }

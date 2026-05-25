@@ -2,7 +2,7 @@ import CoreMedia
 import CoreVideo
 
 struct MovementDetectionEvent: Sendable {
-    let landingTimestamp: CMTime
+    let jumpTimestamp: CMTime
 }
 
 nonisolated protocol MovementDetector: AnyObject, Sendable {

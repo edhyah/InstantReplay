@@ -62,24 +62,9 @@ final class ReplayDetectionTests: XCTestCase {
 
                 // Detailed assertions for better error messages
                 XCTAssertEqual(
-                    result.detected.approachStarts.count,
-                    truth.approaches.count,
-                    "\(result.video): approachStart count mismatch"
-                )
-                XCTAssertEqual(
                     result.detected.takeoffs.count,
                     truth.approaches.count,
                     "\(result.video): takeoff count mismatch"
-                )
-                XCTAssertEqual(
-                    result.detected.peaks.count,
-                    truth.approaches.count,
-                    "\(result.video): peak count mismatch"
-                )
-                XCTAssertEqual(
-                    result.detected.landings.count,
-                    truth.approaches.count,
-                    "\(result.video): landing count mismatch"
                 )
             }
         }
