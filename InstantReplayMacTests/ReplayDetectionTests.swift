@@ -56,8 +56,7 @@ final class ReplayDetectionTests: XCTestCase {
                 // Assert test passes when ground truth is provided
                 XCTAssertTrue(
                     result.passed,
-                    "Detection results for \(result.video) did not match ground truth. " +
-                    "Check JSON output for details."
+                    result.failureSummary ?? "Detection results for \(result.video) did not match ground truth."
                 )
 
                 // Detailed assertions for better error messages

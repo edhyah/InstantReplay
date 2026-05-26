@@ -19,6 +19,12 @@ struct DetectionErrors: Codable, Sendable {
     var landing: [TimestampComparison] = []
 }
 
+struct PhaseCountMismatch: Codable, Sendable {
+    let phase: String
+    let detected: Int
+    let expected: Int
+}
+
 struct DetectedEvents: Codable, Sendable {
     var approachStarts: [DetectedEvent] = []
     var takeoffs: [DetectedEvent] = []
@@ -35,8 +41,10 @@ struct ReplayDetectionResult: Codable, Sendable {
     let video: String
     let detected: DetectedEvents
     let errors: DetectionErrors
+    let countMismatches: [PhaseCountMismatch]
     let stateTrace: [StateTraceEntry]
     let passed: Bool
+    let failureSummary: String?
 }
 
 final class ReplayDetectionRunner {
@@ -44,7 +52,7 @@ final class ReplayDetectionRunner {
         "approachStart": 0.5,
         "takeoff": 0.2,
         "peak": 0.2,
-        "landing": 0.2
+        "landing": 0.3
     ]
 
     func run(
@@ -52,11 +60,9 @@ final class ReplayDetectionRunner {
         groundTruth: GroundTruth?,
         thresholds: StateMachineThresholds = StateMachineThresholds()
     ) -> ReplayDetectionResult {
-        print("DEBUG Runner: Starting run with \(reader.frameCount) frames")
         let mockTime = MockTimeProvider()
         let bodyTracker = BodyTracker()
         let stateMachine = ApproachDetectorStateMachine(timeProvider: mockTime, thresholds: thresholds)
-        print("DEBUG Runner: Created state machine")
 
         var detected = DetectedEvents()
         let detectedTakeoffs = DetectedEventRecorder()
@@ -109,12 +115,21 @@ final class ReplayDetectionRunner {
 
         // Compare with ground truth
         var errors = DetectionErrors()
+        var countMismatches: [PhaseCountMismatch] = []
         var passed = true
+        var failureSummary: String?
 
         if let truth = groundTruth {
+            let expectedApproachStarts = truth.approaches.map { $0.approachStart }
             let expectedTakeoffs = truth.approaches.map { $0.takeoff }
             let expectedPeaks = truth.approaches.map { $0.peak }
             let expectedLandings = truth.approaches.map { $0.landing }
+
+            errors.approachStart = compareTimestamps(
+                detected: detected.approachStarts.map { $0.timestamp },
+                expected: expectedApproachStarts,
+                tolerance: phaseTolerance["approachStart"]!
+            )
 
             errors.takeoff = compareTimestamps(
                 detected: detected.takeoffs.map { $0.timestamp },
@@ -134,18 +149,35 @@ final class ReplayDetectionRunner {
                 tolerance: phaseTolerance["landing"]!
             )
 
-            // Check if all comparisons pass
-            let allComparisons = errors.takeoff
-            let countMismatch = detected.takeoffs.count != truth.approaches.count
-            passed = allComparisons.allSatisfy { $0.withinTolerance } && !countMismatch
+            countMismatches = makeCountMismatches(
+                detected: detected,
+                expectedTakeoffCount: expectedTakeoffs.count,
+                expectedPeakCount: expectedPeaks.count,
+                expectedLandingCount: expectedLandings.count
+            )
+
+            let allComparisons = errors.takeoff + errors.peak + errors.landing
+            passed = allComparisons.allSatisfy { $0.withinTolerance } && countMismatches.isEmpty
+            failureSummary = passed ? nil : makeFailureSummary(
+                video: reader.videoInfo.filename,
+                detected: detected,
+                expectedApproachStarts: expectedApproachStarts,
+                expectedTakeoffs: expectedTakeoffs,
+                expectedPeaks: expectedPeaks,
+                expectedLandings: expectedLandings,
+                errors: errors,
+                countMismatches: countMismatches
+            )
         }
 
         return ReplayDetectionResult(
             video: reader.videoInfo.filename,
             detected: detected,
             errors: errors,
+            countMismatches: countMismatches,
             stateTrace: stateTrace,
-            passed: passed
+            passed: passed,
+            failureSummary: failureSummary
         )
     }
 
@@ -170,6 +202,68 @@ final class ReplayDetectionRunner {
         }
 
         return comparisons
+    }
+
+    private func makeCountMismatches(
+        detected: DetectedEvents,
+        expectedTakeoffCount: Int,
+        expectedPeakCount: Int,
+        expectedLandingCount: Int
+    ) -> [PhaseCountMismatch] {
+        [
+            ("takeoff", detected.takeoffs.count, expectedTakeoffCount),
+            ("peak", detected.peaks.count, expectedPeakCount),
+            ("landing", detected.landings.count, expectedLandingCount)
+        ].compactMap { phase, detected, expected in
+            detected == expected ? nil : PhaseCountMismatch(phase: phase, detected: detected, expected: expected)
+        }
+    }
+
+    private func makeFailureSummary(
+        video: String,
+        detected: DetectedEvents,
+        expectedApproachStarts: [TimeInterval],
+        expectedTakeoffs: [TimeInterval],
+        expectedPeaks: [TimeInterval],
+        expectedLandings: [TimeInterval],
+        errors: DetectionErrors,
+        countMismatches: [PhaseCountMismatch]
+    ) -> String {
+        var lines = ["\(video) failed:"]
+
+        for mismatch in countMismatches {
+            lines.append("  \(mismatch.phase) count: detected \(mismatch.detected), expected \(mismatch.expected)")
+        }
+
+        lines.append("  approachStart expected \(format(expectedApproachStarts)), detected \(format(detected.approachStarts.map { $0.timestamp }))")
+        lines.append("  takeoff expected \(format(expectedTakeoffs)), detected \(format(detected.takeoffs.map { $0.timestamp }))")
+        lines.append("  peak expected \(format(expectedPeaks)), detected \(format(detected.peaks.map { $0.timestamp }))")
+        lines.append("  landing expected \(format(expectedLandings)), detected \(format(detected.landings.map { $0.timestamp }))")
+
+        appendOutOfTolerance(errors.approachStart, phase: "approachStart", to: &lines)
+        appendOutOfTolerance(errors.takeoff, phase: "takeoff", to: &lines)
+        appendOutOfTolerance(errors.peak, phase: "peak", to: &lines)
+        appendOutOfTolerance(errors.landing, phase: "landing", to: &lines)
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func appendOutOfTolerance(_ comparisons: [TimestampComparison], phase: String, to lines: inout [String]) {
+        for comparison in comparisons where !comparison.withinTolerance {
+            lines.append(
+                String(
+                    format: "  %@ off by %.3fs: detected %.3f, expected %.3f",
+                    phase,
+                    comparison.delta,
+                    comparison.detected,
+                    comparison.expected
+                )
+            )
+        }
+    }
+
+    private func format(_ values: [TimeInterval]) -> String {
+        "[" + values.map { String(format: "%.3f", $0) }.joined(separator: ", ") + "]"
     }
 
     func outputJSON(_ result: ReplayDetectionResult) -> String {

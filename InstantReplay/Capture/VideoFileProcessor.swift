@@ -3,12 +3,15 @@ import CoreMedia
 import CoreVideo
 
 @Observable
-final class VideoFileProcessor: NSObject {
-    let detectionPipeline = DetectionPipeline()
+final class VideoFileProcessor: NSObject, MediaSourceSession {
+    let detectionCoordinator = DetectionCoordinator(
+        label: "com.edwardahn.InstantReplay.videoDetection",
+        samplingPolicy: .minimumInterval(1.0 / 15.0)
+    )
 
-    nonisolated(unsafe) var onDetectionUpdate: (@Sendable (DetectionUpdate) -> Void)?
-    nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
-    nonisolated(unsafe) var onPlaybackComplete: (() -> Void)?
+    @ObservationIgnored nonisolated(unsafe) var onDetectionUpdate: (@Sendable (DetectionUpdate) -> Void)?
+    @ObservationIgnored nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
+    @ObservationIgnored nonisolated(unsafe) var onPlaybackComplete: (() -> Void)?
 
     private var frameObservers: [ObjectIdentifier: (CVPixelBuffer) -> Void] = [:]
 
@@ -35,18 +38,24 @@ final class VideoFileProcessor: NSObject {
     private var reachedEndAfterCurrentFrame: Bool = false
 
     private let processingQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.videoProcessing", qos: .userInitiated)
-    private let detectionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.videoDetection", qos: .userInitiated)
 
     private var frameCounter: Int = 0
-    private var lastDetectionTimestamp: CMTime?
     private var lastFrameTime: CFTimeInterval = 0
     private var fpsWindowStartTime: CFTimeInterval = 0
     private var fpsWindowFrameCount: Int = 0
 
-    private let targetPoseDetectionInterval: TimeInterval = 1.0 / 15.0
+    override init() {
+        super.init()
+        detectionCoordinator.onDetectionUpdate = { [weak self] update in
+            self?.onDetectionUpdate?(update)
+        }
+        detectionCoordinator.onMovementDetected = { [weak self] event in
+            self?.onMovementDetected?(event)
+        }
+    }
 
     func loadVideo(url: URL, completion: @escaping (Bool) -> Void) {
-        let asset = AVAsset(url: url)
+        let asset = AVURLAsset(url: url)
 
         Task {
             do {
@@ -103,9 +112,8 @@ final class VideoFileProcessor: NSObject {
             self?.reachedEndAfterCurrentFrame = false
         }
 
-        detectionPipeline.reset()
+        detectionCoordinator.reset()
         frameCounter = 0
-        lastDetectionTimestamp = nil
         fpsWindowStartTime = 0
         fpsWindowFrameCount = 0
         measuredFPS = 0
@@ -120,7 +128,7 @@ final class VideoFileProcessor: NSObject {
     func restartPlayback() {
         stop()
         guard let url = currentVideoURL else { return }
-        let asset = AVAsset(url: url)
+        let asset = AVURLAsset(url: url)
         videoAsset = asset
         start()
     }
@@ -155,7 +163,7 @@ final class VideoFileProcessor: NSObject {
                     self.firstSampleTimestamp = nil
                     self.playbackStartWallTime = nil
                     self.reachedEndAfterCurrentFrame = false
-                    self.lastDetectionTimestamp = nil
+                    self.detectionCoordinator.reset()
                 }
             } catch {
                 debugLog("[VideoFileProcessor] Failed to setup reader: \(error)")
@@ -269,8 +277,6 @@ final class VideoFileProcessor: NSObject {
 
     private func displayAndDetect(_ sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-
         // Update FPS measurement
         let now = CACurrentMediaTime()
         fpsWindowFrameCount += 1
@@ -295,40 +301,11 @@ final class VideoFileProcessor: NSObject {
         }
 
         frameCounter += 1
-        if shouldRunPoseDetection(at: timestamp) {
-            lastDetectionTimestamp = timestamp
-            let detectionSampleBuffer = sampleBuffer
-            detectionQueue.async { [weak self] in
-                _ = detectionSampleBuffer
-                guard let self = self else { return }
-
-                self.detectionPipeline.onMovementDetected = { [weak self] event in
-                    self?.onMovementDetected?(event)
-                }
-
-                self.detectionPipeline.onDetectionResult = { [weak self] result in
-                    guard let self = self else { return }
-                    let update = DetectionUpdate(
-                        trackingResult: result.trackingResult,
-                        stateMachineDebug: result.stateMachineDebug,
-                        detectionFlash: result.didDetectMovement,
-                        captureFPS: self.measuredFPS
-                    )
-                    self.onDetectionUpdate?(update)
-                }
-
-                self.detectionPipeline.processFrame(pixelBuffer, timestamp: timestamp)
-            }
-        }
-    }
-
-    private func shouldRunPoseDetection(at timestamp: CMTime) -> Bool {
-        guard let lastDetectionTimestamp else {
-            return true
-        }
-
-        let elapsed = CMTimeGetSeconds(CMTimeSubtract(timestamp, lastDetectionTimestamp))
-        return elapsed >= targetPoseDetectionInterval
+        detectionCoordinator.process(
+            sampleBuffer: sampleBuffer,
+            metadata: .backCamera,
+            measuredFPS: measuredFPS
+        )
     }
 
     private func handlePlaybackComplete() {
@@ -337,7 +314,7 @@ final class VideoFileProcessor: NSObject {
     }
 
     /// Extracts a clip around the jump timestamp from the video file.
-    func extractClip(jumpTimestamp: CMTime, completion: @escaping (ClipAsset?) -> Void) {
+    func extractClip(jumpTimestamp: CMTime, completion: @escaping @Sendable (ClipAsset?) -> Void) {
         guard let url = currentVideoURL else {
             completion(nil)
             return
@@ -380,6 +357,7 @@ final class VideoFileProcessor: NSObject {
 
                 let timeRange = CMTimeRangeMake(start: clampedStart, duration: duration)
                 try compositionTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
+                compositionTrack.preferredTransform = try await videoTrack.load(.preferredTransform)
 
                 let clipAsset = ClipAsset(
                     asset: composition,

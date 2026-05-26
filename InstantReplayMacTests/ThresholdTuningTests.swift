@@ -108,7 +108,7 @@ final class ThresholdTuningTests: XCTestCase {
         let passingConfigs = results.filter { $0.passRate == 1.0 }
         print("\nConfigurations with 100% pass rate: \(passingConfigs.count)/\(results.count)")
 
-        // Test passes if we found at least one configuration that works
         XCTAssertFalse(results.isEmpty, "Grid search should produce results")
+        XCTAssertFalse(passingConfigs.isEmpty, "Grid search should find at least one threshold configuration that passes all labeled videos")
     }
 }

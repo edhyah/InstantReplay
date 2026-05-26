@@ -73,7 +73,7 @@ final class TuningSession {
                 passCount += 1
             }
 
-            detectionCount += result.detected.landings.count
+            detectionCount += result.detected.takeoffs.count
             expectedCount += video.groundTruth.approaches.count
 
             // Accumulate errors

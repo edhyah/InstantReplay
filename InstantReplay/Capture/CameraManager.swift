@@ -13,23 +13,35 @@ enum CameraPosition {
 }
 
 @Observable
-final class CameraManager: NSObject {
+final class CameraManager: NSObject, MediaSourceSession {
     nonisolated(unsafe) let captureSession = AVCaptureSession()
     let rollingBuffer = RollingBufferManager()
-    let detectionPipeline = DetectionPipeline()
+    let detectionCoordinator = DetectionCoordinator(
+        label: "com.edwardahn.InstantReplay.cameraDetection",
+        samplingPolicy: .everyNthFrame(CaptureConstants.poseSubsamplingRate)
+    )
     private let sessionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.camera", qos: .userInitiated)
-    private let detectionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.detection", qos: .userInitiated)
 
-    nonisolated(unsafe) var onDetectionUpdate: (@Sendable (DetectionUpdate) -> Void)?
-    nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
+    @ObservationIgnored nonisolated(unsafe) var onDetectionUpdate: (@Sendable (DetectionUpdate) -> Void)?
+    @ObservationIgnored nonisolated(unsafe) var onMovementDetected: (@Sendable (MovementDetectionEvent) -> Void)?
 
     private(set) var currentPosition: CameraPosition = .back
+    @ObservationIgnored private nonisolated(unsafe) var capturePosition: CameraPosition = .back
 
     private var isConfigured = false
-    private nonisolated(unsafe) var frameCounter: Int = 0
-    private nonisolated(unsafe) var captureWindowFrameCount: Int = 0
-    private nonisolated(unsafe) var captureWindowStartTime: CFTimeInterval = 0
-    private nonisolated(unsafe) var measuredCaptureFPS: Double = 0
+    @ObservationIgnored private nonisolated(unsafe) var captureWindowFrameCount: Int = 0
+    @ObservationIgnored private nonisolated(unsafe) var captureWindowStartTime: CFTimeInterval = 0
+    @ObservationIgnored private nonisolated(unsafe) var measuredCaptureFPS: Double = 0
+
+    override init() {
+        super.init()
+        detectionCoordinator.onDetectionUpdate = { [weak self] update in
+            self?.onDetectionUpdate?(update)
+        }
+        detectionCoordinator.onMovementDetected = { [weak self] event in
+            self?.onMovementDetected?(event)
+        }
+    }
 
     func configure() {
         guard !isConfigured else { return }
@@ -45,7 +57,7 @@ final class CameraManager: NSObject {
         captureSession.sessionPreset = .high
 
         // Add camera input based on current position
-        let avPosition: AVCaptureDevice.Position = currentPosition == .front ? .front : .back
+        let avPosition = avCapturePosition(for: capturePosition)
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avPosition) else {
             captureSession.commitConfiguration()
             return
@@ -118,8 +130,8 @@ final class CameraManager: NSObject {
             }
 
             // Toggle position
-            let newPosition: CameraPosition = currentPosition == .back ? .front : .back
-            let avPosition: AVCaptureDevice.Position = newPosition == .front ? .front : .back
+            let newPosition = toggledPosition(from: capturePosition)
+            let avPosition = avCapturePosition(for: newPosition)
 
             // Add new camera input
             guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avPosition) else {
@@ -146,12 +158,12 @@ final class CameraManager: NSObject {
             DispatchQueue.main.async {
                 self.currentPosition = newPosition
             }
+            capturePosition = newPosition
 
             // Reset detection pipeline and rolling buffer (old frames are from different camera)
-            detectionPipeline.reset()
+            detectionCoordinator.reset()
             rollingBuffer.reset()
-            rollingBuffer.setFrontCamera(newPosition == .front)
-            frameCounter = 0
+            rollingBuffer.setFrontCamera(isFrontCamera(newPosition))
             captureWindowFrameCount = 0
             captureWindowStartTime = 0
             measuredCaptureFPS = 0
@@ -177,12 +189,39 @@ final class CameraManager: NSObject {
 
     func resetForForeground() {
         rollingBuffer.reset()
-        detectionPipeline.reset()
-        frameCounter = 0
+        detectionCoordinator.reset()
         captureWindowFrameCount = 0
         captureWindowStartTime = 0
         measuredCaptureFPS = 0
         isConfigured = false
+    }
+
+    func extractClip(jumpTimestamp: CMTime, completion: @escaping @Sendable (ClipAsset?) -> Void) {
+        ClipExtractor(rollingBuffer: rollingBuffer).extractClip(
+            jumpTimestamp: jumpTimestamp,
+            completion: completion
+        )
+    }
+
+    private nonisolated func toggledPosition(from position: CameraPosition) -> CameraPosition {
+        switch position {
+        case .front: .back
+        case .back: .front
+        }
+    }
+
+    private nonisolated func avCapturePosition(for position: CameraPosition) -> AVCaptureDevice.Position {
+        switch position {
+        case .front: .front
+        case .back: .back
+        }
+    }
+
+    private nonisolated func isFrontCamera(_ position: CameraPosition) -> Bool {
+        switch position {
+        case .front: true
+        case .back: false
+        }
     }
 }
 
@@ -205,30 +244,10 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             captureWindowStartTime = captureNow
         }
 
-        // Subsample frames for pose estimation
-        frameCounter += 1
-        if frameCounter % CaptureConstants.poseSubsamplingRate == 0 {
-            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            nonisolated(unsafe) let buffer = pixelBuffer
-            let isFrontCamera = currentPosition == .front
-            detectionQueue.async { [self] in
-                self.detectionPipeline.onMovementDetected = { [self] event in
-                    self.onMovementDetected?(event)
-                }
-
-                self.detectionPipeline.onDetectionResult = { [self] result in
-                    let update = DetectionUpdate(
-                        trackingResult: result.trackingResult,
-                        stateMachineDebug: result.stateMachineDebug,
-                        detectionFlash: result.didDetectMovement,
-                        captureFPS: self.measuredCaptureFPS
-                    )
-                    self.onDetectionUpdate?(update)
-                }
-
-                self.detectionPipeline.processFrame(buffer, timestamp: timestamp, isFrontCamera: isFrontCamera)
-            }
-        }
+        detectionCoordinator.process(
+            sampleBuffer: sampleBuffer,
+            metadata: FrameMetadata(isFrontCamera: isFrontCamera(capturePosition)),
+            measuredFPS: measuredCaptureFPS
+        )
     }
 }

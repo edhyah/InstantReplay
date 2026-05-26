@@ -21,13 +21,13 @@ struct StateMachineThresholds: Sendable, Equatable {
     let timeoutDuration: TimeInterval
 
     init(
-        approachHorizontalVelocity: CGFloat = 0.28,
+        approachHorizontalVelocity: CGFloat = 0.12,
         approachSustainedFrames: Int = 2,
         approachMinDuration: TimeInterval = 0.3,
         jumpSustainedFrames: Int = 2,
-        jumpMinVerticalDisplacement: CGFloat = 0.06,
+        jumpMinVerticalDisplacement: CGFloat = 0.05,
         ascendingVerticalVelocity: CGFloat = -0.12,
-        descendingVerticalVelocity: CGFloat = 0.15,
+        descendingVerticalVelocity: CGFloat = 0.05,
         landingVerticalMagnitude: CGFloat = 0.16,
         timeoutDuration: TimeInterval = 3.0
     ) {
@@ -195,6 +195,7 @@ final class ApproachDetectorStateMachine: Sendable {
         trackedBodies
             .filter {
                 $0.centroidHistory.count >= 2
+                    && abs($0.horizontalVelocity) >= thresholds.approachHorizontalVelocity
                     && $0.verticalVelocity < thresholds.ascendingVerticalVelocity
             }
             .min(by: { $0.verticalVelocity < $1.verticalVelocity })

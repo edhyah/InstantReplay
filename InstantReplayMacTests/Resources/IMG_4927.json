@@ -1,0 +1,16 @@
+{
+    "approaches": [
+        {
+            "approachStart": 0.38,
+            "steps": {
+                "first": { "timestamp": 1.29, "foot": "right" },
+                "second": { "timestamp": 1.84, "foot": "left" },
+                "orientation": { "timestamp": 2.38, "foot": "right" },
+                "plant": { "timestamp": 2.62, "foot": "left" }
+            },
+            "takeoff": 2.8,
+            "peak": 3.07,
+            "landing": 3.4
+        }
+    ]
+}
