@@ -7,24 +7,35 @@ enum InputMode {
     case video
 }
 
+enum VideoImportPurpose {
+    case source
+    case comparison
+}
+
 struct ContentView: View {
     let cameraManager: CameraManager
     @State private var detectionUpdate: DetectionUpdate?
     @State private var debugOverlayVisible: Bool = true
     @State private var replayManager = ReplayManager()
+    @State private var comparisonReplayManager = ComparisonReplayManager()
     @State private var showingReplay: Bool = false
     @State private var replayAvailable: Bool = false
+    @State private var comparisonReplayActive: Bool = false
     @State private var controlsVisible: Bool = false
+    @State private var latestLiveClip: ClipAsset?
     @Environment(\.scenePhase) private var scenePhase
 
     // Video input mode
     @State private var inputMode: InputMode = .camera
     @State private var videoProcessor = VideoFileProcessor()
     @State private var showingVideoPicker: Bool = false
+    @State private var videoImportPurpose: VideoImportPurpose = .source
     @State private var videoLoaded: Bool = false
     @State private var isLoadingVideo: Bool = false
     @State private var importError: String? = nil
     @State private var showDebugConsole: Bool = false
+    @State private var comparisonVideoURL: URL?
+    @State private var comparisonJumpTimestamp: CMTime?
 
     var body: some View {
         ZStack {
@@ -55,19 +66,28 @@ struct ContentView: View {
 
             // Detection/Replay layer on top when showing replay (both modes use ReplayPlayerView)
             if showingReplay {
-                ReplayPlayerView(replayManager: replayManager)
-                    .ignoresSafeArea()
+                if comparisonReplayActive {
+                    comparisonReplayView
+                        .ignoresSafeArea()
+                } else {
+                    ReplayPlayerView(replayManager: replayManager)
+                        .ignoresSafeArea()
+                }
             }
 
             // Playback controls overlay for BOTH modes (shows PiP + import button)
             PlaybackControlsView(
                 replayManager: replayManager,
+                comparisonReplayManager: comparisonReplayManager,
                 cameraManager: cameraManager,
                 inputMode: inputMode,
                 videoProcessor: inputMode == .video ? videoProcessor : nil,
                 onImportTapped: { toggleMode() },
+                onCompareTapped: { toggleComparisonMode() },
                 showingReplay: $showingReplay,
                 replayAvailable: replayAvailable,
+                isComparisonReplay: comparisonReplayActive,
+                comparisonVideoLoaded: comparisonVideoURL != nil,
                 visible: $controlsVisible
             )
             .ignoresSafeArea()
@@ -109,20 +129,29 @@ struct ContentView: View {
             cameraManager.stop()
             videoProcessor.stop()
             replayManager.stop()
+            comparisonReplayManager.stop()
         }
         .onChange(of: showingReplay) { _, showing in
             if showing {
-                replayManager.resume()
+                if comparisonReplayActive {
+                    comparisonReplayManager.resume()
+                } else {
+                    replayManager.resume()
+                }
             } else {
                 replayManager.pause()
+                comparisonReplayManager.pause()
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 // Reset to pre-first-detection state on foreground
                 replayManager.stop()
+                comparisonReplayManager.stop()
                 showingReplay = false
                 replayAvailable = false
+                comparisonReplayActive = false
+                latestLiveClip = nil
                 controlsVisible = false
                 cameraManager.rollingBuffer.clearReplayReference()
             }
@@ -130,7 +159,12 @@ struct ContentView: View {
         .sheet(isPresented: $showingVideoPicker) {
             VideoPickerView(
                 onVideoSelected: { url in
-                    loadVideo(url: url)
+                    switch videoImportPurpose {
+                    case .source:
+                        loadVideo(url: url)
+                    case .comparison:
+                        loadComparisonVideo(url: url)
+                    }
                 },
                 onLoadingStarted: {
                     isLoadingVideo = true
@@ -139,7 +173,7 @@ struct ContentView: View {
                     isLoadingVideo = false
                     if !error.isEmpty {
                         importError = error
-                    } else {
+                    } else if videoImportPurpose == .source {
                         // User cancelled, return to camera
                         requestCameraAccess()
                     }
@@ -160,6 +194,7 @@ struct ContentView: View {
         if inputMode == .camera {
             // Switch to video mode
             cameraManager.stop()
+            videoImportPurpose = .source
             showingVideoPicker = true
         } else {
             // Switch back to camera mode
@@ -169,7 +204,40 @@ struct ContentView: View {
             detectionUpdate = nil
             showingReplay = false
             replayAvailable = false
+            comparisonReplayActive = false
+            latestLiveClip = nil
             requestCameraAccess()
+        }
+    }
+
+    private var comparisonReplayView: some View {
+        HStack(spacing: 1) {
+            ReplayPlayerView(replayManager: comparisonReplayManager.live)
+            ReplayPlayerView(replayManager: comparisonReplayManager.reference)
+        }
+        .background(Color.black)
+    }
+
+    private func importComparisonVideo() {
+        videoImportPurpose = .comparison
+        showingVideoPicker = true
+    }
+
+    private func toggleComparisonMode() {
+        if comparisonReplayActive {
+            exitComparisonReplay()
+        } else {
+            importComparisonVideo()
+        }
+    }
+
+    private func exitComparisonReplay() {
+        comparisonReplayManager.stop()
+        comparisonReplayActive = false
+
+        guard let latestLiveClip else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            replayManager.playClip(latestLiveClip)
         }
     }
 
@@ -186,6 +254,31 @@ struct ContentView: View {
                     videoProcessor.start()
                 } else {
                     importError = "Failed to load video file."
+                }
+            }
+        }
+    }
+
+    private func loadComparisonVideo(url: URL) {
+        comparisonVideoURL = nil
+        comparisonJumpTimestamp = nil
+        videoProcessor.detectFirstJump(in: url) { jumpTimestamp in
+            DispatchQueue.main.async {
+                isLoadingVideo = false
+                guard let jumpTimestamp else {
+                    importError = "No jump was detected in the comparison video."
+                    return
+                }
+
+                comparisonVideoURL = url
+                comparisonJumpTimestamp = jumpTimestamp
+                debugLog("[Comparison] loaded reference video, jumpTimestamp=\(jumpTimestamp.seconds)")
+
+                if let latestLiveClip {
+                    showingReplay = true
+                    replayAvailable = true
+                    controlsVisible = false
+                    playExtractedClip(latestLiveClip)
                 }
             }
         }
@@ -214,15 +307,13 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     if let clip = clipAsset {
                         debugLog("[Video] clip extracted, duration=\(clip.timeRange.duration.seconds)")
+                        latestLiveClip = clip
                         // IMPORTANT: Set showingReplay first so SwiftUI creates ReplayPlayerView
                         // and attachToLayer is called before playClip tries to use playerLayer
                         showingReplay = true
                         replayAvailable = true
                         controlsVisible = false
-                        // Delay playClip slightly to allow view hierarchy to establish
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            replayManager.playClip(clip)
-                        }
+                        playExtractedClip(clip)
                     } else {
                         debugLog("[Video] clip extraction returned nil")
                     }
@@ -264,20 +355,50 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     if let clip = clipAsset {
                         cameraManager.rollingBuffer.markReplayReference(clip.referencedURLs)
+                        latestLiveClip = clip
                         // IMPORTANT: Set showingReplay first so SwiftUI creates ReplayPlayerView
                         // and attachToLayer is called before playClip tries to use playerLayer
                         showingReplay = true
                         replayAvailable = true
                         controlsVisible = false
-                        debugLog("[Replay] showingReplay set to true")
-                        // Delay playClip slightly to allow view hierarchy to establish
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            replayManager.playClip(clip)
-                        }
+                        playExtractedClip(clip)
                     } else {
                         cameraManager.rollingBuffer.clearReplayReference()
                         debugLog("[Replay] no clip, cleared references")
                     }
+                }
+            }
+        }
+    }
+
+    private func playExtractedClip(_ liveClip: ClipAsset) {
+        latestLiveClip = liveClip
+
+        guard let comparisonVideoURL,
+              let comparisonJumpTimestamp else {
+            comparisonReplayActive = false
+            debugLog("[Replay] showingReplay set to true")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                replayManager.playClip(liveClip)
+            }
+            return
+        }
+
+        videoProcessor.extractClip(from: comparisonVideoURL, jumpTimestamp: comparisonJumpTimestamp) { referenceClip in
+            DispatchQueue.main.async {
+                guard let referenceClip else {
+                    comparisonReplayActive = false
+                    debugLog("[Comparison] reference clip extraction failed, falling back to single replay")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        replayManager.playClip(liveClip)
+                    }
+                    return
+                }
+
+                comparisonReplayActive = true
+                debugLog("[Comparison] playing split replay")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    comparisonReplayManager.play(liveClip: liveClip, referenceClip: referenceClip)
                 }
             }
         }

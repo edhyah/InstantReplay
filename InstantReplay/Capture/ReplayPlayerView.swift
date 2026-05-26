@@ -163,7 +163,13 @@ final class ReplayManager {
     func seek(to fraction: Double) {
         guard clipDuration > 0 else { return }
         let targetSeconds = clipStartTime.seconds + fraction * clipDuration
-        let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: 600)
+        seek(toClipSeconds: targetSeconds)
+    }
+
+    func seek(toClipSeconds seconds: Double) {
+        guard clipDuration > 0 else { return }
+        let clampedSeconds = max(clipStartTime.seconds, min(clipStartTime.seconds + clipDuration, seconds))
+        let targetTime = CMTime(seconds: clampedSeconds, preferredTimescale: 600)
         player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
@@ -270,5 +276,175 @@ final class ReplayManager {
             player.removeTimeObserver(observer)
         }
         timeObserver = nil
+    }
+}
+
+@MainActor
+@Observable
+final class ComparisonReplayManager {
+    let live = ReplayManager()
+    let reference = ReplayManager()
+
+    private(set) var referenceOffset: TimeInterval = 0
+    private(set) var clipDuration: Double = 0
+    private(set) var currentRate: Float = CaptureConstants.defaultPlaybackRate
+    private var liveSyncPoint: Double = CaptureConstants.clipPreRollDuration
+    private var referenceSyncPoint: Double = CaptureConstants.clipPreRollDuration
+    private var timelineStart: Double = -CaptureConstants.clipPreRollDuration
+    private var timelineEnd: Double = CaptureConstants.clipPostRollDuration
+    private var liveDuration: Double = 0
+    private var referenceDuration: Double = 0
+    private var liveLoopStart: Double = 0
+    private var referenceLoopStart: Double = 0
+    private var sourceLiveClip: ClipAsset?
+    private var sourceReferenceClip: ClipAsset?
+
+    var isPlaying: Bool {
+        live.isPlaying
+    }
+
+    var currentTime: Double {
+        max(0, min(clipDuration, live.currentTime))
+    }
+
+    var clipCapturedAt: Date? {
+        live.clipCapturedAt
+    }
+
+    func play(liveClip: ClipAsset, referenceClip: ClipAsset) {
+        sourceLiveClip = liveClip
+        sourceReferenceClip = referenceClip
+        liveSyncPoint = liveClip.syncPoint.seconds
+        referenceSyncPoint = referenceClip.syncPoint.seconds
+        liveDuration = liveClip.timeRange.duration.seconds
+        referenceDuration = referenceClip.timeRange.duration.seconds
+        currentRate = CaptureConstants.defaultPlaybackRate
+
+        playAlignedClips(startAt: 0, shouldResume: true)
+    }
+
+    func stop() {
+        live.stop()
+        reference.stop()
+        referenceOffset = 0
+        clipDuration = 0
+        currentRate = CaptureConstants.defaultPlaybackRate
+        liveDuration = 0
+        referenceDuration = 0
+        liveLoopStart = 0
+        referenceLoopStart = 0
+        sourceLiveClip = nil
+        sourceReferenceClip = nil
+    }
+
+    func pause() {
+        live.pause()
+        reference.pause()
+    }
+
+    func resume() {
+        live.resume()
+        reference.resume()
+    }
+
+    func togglePlayPause() {
+        if isPlaying {
+            pause()
+        } else {
+            resume()
+        }
+    }
+
+    func setRate(_ rate: Float) {
+        currentRate = rate
+        live.setRate(rate)
+        reference.setRate(rate)
+    }
+
+    func stepForward() {
+        pause()
+        let nextTime = min(clipDuration, currentTime + 1.0 / 30.0)
+        seek(toComparisonSeconds: nextTime)
+    }
+
+    func stepBackward() {
+        pause()
+        let nextTime = max(0, currentTime - 1.0 / 30.0)
+        seek(toComparisonSeconds: nextTime)
+    }
+
+    func seek(to fraction: Double) {
+        guard clipDuration > 0 else { return }
+        seek(toComparisonSeconds: max(0, min(1, fraction)) * clipDuration)
+    }
+
+    func nudgeReference(by delta: TimeInterval) {
+        let comparisonSeconds = currentTime
+        let wasPlaying = isPlaying
+        referenceOffset += delta
+        playAlignedClips(startAt: comparisonSeconds, shouldResume: wasPlaying)
+    }
+
+    func resetReferenceOffset() {
+        let comparisonSeconds = currentTime
+        let wasPlaying = isPlaying
+        referenceOffset = 0
+        playAlignedClips(startAt: comparisonSeconds, shouldResume: wasPlaying)
+    }
+
+    private func seek(toComparisonSeconds seconds: Double) {
+        let clampedSeconds = max(0, min(clipDuration, seconds))
+        live.seek(toClipSeconds: liveLoopStart + clampedSeconds)
+        reference.seek(toClipSeconds: referenceLoopStart + clampedSeconds)
+    }
+
+    private func playAlignedClips(startAt seconds: Double, shouldResume: Bool) {
+        guard let sourceLiveClip,
+              let sourceReferenceClip else {
+            return
+        }
+
+        updateTimelineBounds()
+        guard clipDuration > 0 else { return }
+
+        liveLoopStart = liveSyncPoint + timelineStart
+        referenceLoopStart = referenceSyncPoint + timelineStart - referenceOffset
+
+        let duration = CMTime(seconds: clipDuration, preferredTimescale: 600)
+        let alignedLiveClip = ClipAsset(
+            asset: sourceLiveClip.asset,
+            timeRange: CMTimeRange(
+                start: CMTime(seconds: liveLoopStart, preferredTimescale: 600),
+                duration: duration
+            ),
+            referencedURLs: sourceLiveClip.referencedURLs,
+            syncPoint: CMTime(seconds: -timelineStart, preferredTimescale: 600)
+        )
+        let alignedReferenceClip = ClipAsset(
+            asset: sourceReferenceClip.asset,
+            timeRange: CMTimeRange(
+                start: CMTime(seconds: referenceLoopStart, preferredTimescale: 600),
+                duration: duration
+            ),
+            referencedURLs: sourceReferenceClip.referencedURLs,
+            syncPoint: CMTime(seconds: -timelineStart + referenceOffset, preferredTimescale: 600)
+        )
+
+        live.playClip(alignedLiveClip)
+        reference.playClip(alignedReferenceClip)
+        setRate(currentRate)
+        seek(toComparisonSeconds: seconds)
+
+        if shouldResume {
+            resume()
+        } else {
+            pause()
+        }
+    }
+
+    private func updateTimelineBounds() {
+        timelineStart = max(-liveSyncPoint, -referenceSyncPoint + referenceOffset)
+        timelineEnd = min(liveDuration - liveSyncPoint, referenceDuration - referenceSyncPoint + referenceOffset)
+        clipDuration = max(0, timelineEnd - timelineStart)
     }
 }

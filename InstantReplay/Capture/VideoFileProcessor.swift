@@ -320,6 +320,11 @@ final class VideoFileProcessor: NSObject, MediaSourceSession {
             return
         }
 
+        extractClip(from: url, jumpTimestamp: jumpTimestamp, completion: completion)
+    }
+
+    /// Extracts a clip around the jump timestamp from an arbitrary video URL.
+    func extractClip(from url: URL, jumpTimestamp: CMTime, completion: @escaping @Sendable (ClipAsset?) -> Void) {
         let preRoll = CaptureConstants.clipPreRollDuration
         let postRoll = CaptureConstants.clipPostRollDuration
 
@@ -362,7 +367,8 @@ final class VideoFileProcessor: NSObject, MediaSourceSession {
                 let clipAsset = ClipAsset(
                     asset: composition,
                     timeRange: CMTimeRangeMake(start: .zero, duration: duration),
-                    referencedURLs: [url]
+                    referencedURLs: [url],
+                    syncPoint: CMTimeSubtract(jumpTimestamp, clampedStart)
                 )
 
                 await MainActor.run { completion(clipAsset) }
@@ -372,4 +378,74 @@ final class VideoFileProcessor: NSObject, MediaSourceSession {
             }
         }
     }
+
+    /// Scans an uploaded video for the first detected jump without switching the app's active source.
+    func detectFirstJump(in url: URL, completion: @escaping @Sendable (CMTime?) -> Void) {
+        let asset = AVURLAsset(url: url)
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let videoTrack = tracks.first else {
+                    await MainActor.run { completion(nil) }
+                    return
+                }
+
+                let reader = try AVAssetReader(asset: asset)
+                let outputSettings: [String: Any] = [
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+                ]
+                let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: outputSettings)
+                output.alwaysCopiesSampleData = false
+
+                guard reader.canAdd(output) else {
+                    await MainActor.run { completion(nil) }
+                    return
+                }
+
+                reader.add(output)
+                guard reader.startReading() else {
+                    await MainActor.run { completion(nil) }
+                    return
+                }
+
+                let pipeline = DetectionPipeline()
+                let detectionState = VideoDetectionScanState()
+                var lastDetectionTimestamp: CMTime?
+                pipeline.onMovementDetected = { event in
+                    detectionState.detectedTimestamp = event.jumpTimestamp
+                }
+
+                while reader.status == .reading, detectionState.detectedTimestamp == nil {
+                    guard let sampleBuffer = output.copyNextSampleBuffer() else {
+                        break
+                    }
+
+                    let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                    if let lastDetectionTimestamp {
+                        let elapsed = CMTimeGetSeconds(CMTimeSubtract(timestamp, lastDetectionTimestamp))
+                        guard elapsed >= 1.0 / 15.0 else { continue }
+                    }
+                    lastDetectionTimestamp = timestamp
+
+                    guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { continue }
+                    pipeline.processFrame(pixelBuffer, timestamp: timestamp, isFrontCamera: false)
+                }
+
+                let detectedTimestamp = detectionState.detectedTimestamp
+                await MainActor.run { completion(detectedTimestamp) }
+            } catch {
+                await MainActor.run {
+                    debugLog("[VideoFileProcessor] failed to detect comparison jump: \(error)")
+                    completion(nil)
+                }
+            }
+        }
+    }
+}
+
+private final class VideoDetectionScanState: @unchecked Sendable {
+    nonisolated(unsafe) var detectedTimestamp: CMTime?
+
+    nonisolated init() {}
 }

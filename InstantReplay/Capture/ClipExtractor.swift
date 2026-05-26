@@ -5,6 +5,7 @@ struct ClipAsset: @unchecked Sendable {
     let asset: AVAsset
     let timeRange: CMTimeRange
     let referencedURLs: Set<URL>
+    let syncPoint: CMTime
 }
 
 final class ClipExtractor: @unchecked Sendable {
@@ -123,6 +124,7 @@ final class ClipExtractor: @unchecked Sendable {
         }
 
         let timeRange = CMTimeRangeMake(start: .zero, duration: insertionTime)
-        return ClipAsset(asset: composition, timeRange: timeRange, referencedURLs: referencedURLs)
+        let syncPoint = CMTimeSubtract(jumpTimestamp, clipStart)
+        return ClipAsset(asset: composition, timeRange: timeRange, referencedURLs: referencedURLs, syncPoint: syncPoint)
     }
 }

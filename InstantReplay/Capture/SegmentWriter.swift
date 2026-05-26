@@ -33,9 +33,10 @@ final class SegmentWriter: @unchecked Sendable {
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
         videoInput.expectsMediaDataInRealTime = true
 
-        // Apply 180 degree rotation for front camera so playback is right-side up
+        // Match the front-camera preview: 180 degree rotation plus selfie mirroring.
         if isFrontCamera {
-            videoInput.transform = CGAffineTransform(rotationAngle: .pi)
+            videoInput.transform = CGAffineTransform(scaleX: 1, y: -1)
+                .translatedBy(x: 0, y: -CGFloat(dimensions.height))
         }
 
         guard assetWriter.canAdd(videoInput) else {

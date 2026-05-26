@@ -1,19 +1,23 @@
+import Combine
 import SwiftUI
 
 struct PlaybackControlsView: View {
     let replayManager: ReplayManager
+    let comparisonReplayManager: ComparisonReplayManager?
     let cameraManager: CameraManager
     let inputMode: InputMode
     let videoProcessor: VideoFileProcessor?
     let onImportTapped: () -> Void
+    let onCompareTapped: () -> Void
     @Binding var showingReplay: Bool
     let replayAvailable: Bool
+    let isComparisonReplay: Bool
+    let comparisonVideoLoaded: Bool
     @Binding var visible: Bool
     @State private var autoHideTask: Task<Void, Never>?
     @State private var isScrubbing: Bool = false
     @State private var wasPlayingBeforeScrub: Bool = false
     @State private var recencyText: String = ""
-    @State private var recencyTimer: Timer?
 
     private static let speedOptions: [Float] = [0.25, 0.5, 1.0]
 
@@ -45,13 +49,7 @@ struct PlaybackControlsView: View {
                                     }
                                 }
 
-                            // Camera switch button (only in camera mode)
-                            if inputMode == .camera {
-                                cameraSwitchButton
-                            }
-
-                            // Import button below PiP
-                            importButton
+                            topToolButtons
                         }
                         .padding(.top, 16)
                         .padding(.trailing, 16)
@@ -65,9 +63,12 @@ struct PlaybackControlsView: View {
                 VStack {
                     HStack {
                         Spacer()
-                        replayButton
-                            .padding(.top, 16)
-                            .padding(.trailing, 16)
+                        HStack(spacing: 10) {
+                            replayButton
+                            topToolButtons
+                        }
+                        .padding(.top, 16)
+                        .padding(.trailing, 16)
                     }
                     Spacer()
                 }
@@ -101,10 +102,16 @@ struct PlaybackControlsView: View {
             }
         }
         .onAppear {
-            startRecencyTimer()
+            updateRecencyText()
         }
-        .onDisappear {
-            stopRecencyTimer()
+        .onChange(of: isComparisonReplay) {
+            updateRecencyText()
+        }
+        .onChange(of: activeClipCapturedAt) {
+            updateRecencyText()
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            updateRecencyText()
         }
     }
 
@@ -119,7 +126,7 @@ struct PlaybackControlsView: View {
                     // Left group: step-back, play/pause, step-fwd
                     HStack(spacing: 20) {
                         Button {
-                            replayManager.stepBackward()
+                            stepBackward()
                             resetAutoHide()
                         } label: {
                             Image(systemName: "backward.frame.fill")
@@ -128,16 +135,16 @@ struct PlaybackControlsView: View {
                         }
 
                         Button {
-                            replayManager.togglePlayPause()
+                            togglePlayPause()
                             resetAutoHide()
                         } label: {
-                            Image(systemName: replayManager.isPlaying ? "pause.fill" : "play.fill")
+                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                                 .font(.title)
                                 .foregroundStyle(.white)
                         }
 
                         Button {
-                            replayManager.stepForward()
+                            stepForward()
                             resetAutoHide()
                         } label: {
                             Image(systemName: "forward.frame.fill")
@@ -147,6 +154,10 @@ struct PlaybackControlsView: View {
                     }
 
                     Spacer()
+
+                    if isComparisonReplay {
+                        nudgeControls
+                    }
 
                     // Right: speed dropdown
                     speedMenu
@@ -170,8 +181,8 @@ struct PlaybackControlsView: View {
     private var scrubBar: some View {
         GeometryReader { geo in
             let width = geo.size.width - 48 // horizontal padding
-            let progress = replayManager.clipDuration > 0
-                ? replayManager.currentTime / replayManager.clipDuration
+            let progress = clipDuration > 0
+                ? currentTime / clipDuration
                 : 0
 
             ZStack(alignment: .leading) {
@@ -199,17 +210,17 @@ struct PlaybackControlsView: View {
                     .onChanged { value in
                         if !isScrubbing {
                             isScrubbing = true
-                            wasPlayingBeforeScrub = replayManager.isPlaying
-                            replayManager.pause()
+                            wasPlayingBeforeScrub = isPlaying
+                            pause()
                         }
                         let fraction = max(0, min(1, (value.location.x - 24) / width))
-                        replayManager.seek(to: fraction)
+                        seek(to: fraction)
                         resetAutoHide()
                     }
                     .onEnded { _ in
                         isScrubbing = false
                         if wasPlayingBeforeScrub {
-                            replayManager.resume()
+                            resume()
                         }
                         resetAutoHide()
                     }
@@ -224,19 +235,19 @@ struct PlaybackControlsView: View {
         Menu {
             ForEach(Self.speedOptions, id: \.self) { rate in
                 Button {
-                    replayManager.setRate(rate)
+                    setRate(rate)
                     resetAutoHide()
                 } label: {
                     HStack {
                         Text(speedLabel(rate))
-                        if replayManager.currentRate == rate {
+                        if currentRate == rate {
                             Image(systemName: "checkmark")
                         }
                     }
                 }
             }
         } label: {
-            Text(speedLabel(replayManager.currentRate))
+            Text(speedLabel(currentRate))
                 .font(.system(size: 14, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 10)
@@ -270,6 +281,17 @@ struct PlaybackControlsView: View {
 
     // MARK: - Camera Switch Button
 
+    private var topToolButtons: some View {
+        HStack(spacing: 10) {
+            if inputMode == .camera {
+                cameraSwitchButton
+            }
+
+            importButton
+            compareButton
+        }
+    }
+
     private var cameraSwitchButton: some View {
         Button {
             cameraManager.switchCamera()
@@ -294,6 +316,55 @@ struct PlaybackControlsView: View {
                 .background(Color.black.opacity(0.6))
                 .clipShape(Circle())
         }
+    }
+
+    private var compareButton: some View {
+        Button(action: onCompareTapped) {
+            Image(systemName: isComparisonReplay ? "rectangle" : "rectangle.split.2x1")
+                .font(.title2)
+                .foregroundColor(.white)
+                .padding(12)
+                .background(comparisonVideoLoaded ? Color.white.opacity(0.28) : Color.black.opacity(0.6))
+                .clipShape(Circle())
+        }
+    }
+
+    private var nudgeControls: some View {
+        HStack(spacing: 12) {
+            Button {
+                comparisonReplayManager?.nudgeReference(by: -1.0 / 30.0)
+                resetAutoHide()
+            } label: {
+                Image(systemName: "backward.end.fill")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+            }
+
+            Button {
+                comparisonReplayManager?.resetReferenceOffset()
+                resetAutoHide()
+            } label: {
+                Text(String(format: "%+.2fs", comparisonReplayManager?.referenceOffset ?? 0))
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 56)
+            }
+
+            Button {
+                comparisonReplayManager?.nudgeReference(by: 1.0 / 30.0)
+                resetAutoHide()
+            } label: {
+                Image(systemName: "forward.end.fill")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.2))
+        )
     }
 
     // MARK: - Replay Button
@@ -321,7 +392,7 @@ struct PlaybackControlsView: View {
     // MARK: - Recency
 
     private func updateRecencyText() {
-        guard let capturedAt = replayManager.clipCapturedAt else {
+        guard let capturedAt = activeClipCapturedAt else {
             recencyText = ""
             return
         }
@@ -338,26 +409,92 @@ struct PlaybackControlsView: View {
         }
     }
 
-    private func startRecencyTimer() {
-        updateRecencyText()
-        recencyTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            DispatchQueue.main.async {
-                updateRecencyText()
-            }
-        }
-    }
-
-    private func stopRecencyTimer() {
-        recencyTimer?.invalidate()
-        recencyTimer = nil
-    }
-
     // MARK: - Helpers
 
     private func speedLabel(_ rate: Float) -> String {
         if rate == 0.25 { return "0.25x" }
         if rate == 0.5 { return "0.5x" }
         return "1x"
+    }
+
+    private var activeComparisonManager: ComparisonReplayManager? {
+        isComparisonReplay ? comparisonReplayManager : nil
+    }
+
+    private var clipDuration: Double {
+        activeComparisonManager?.clipDuration ?? replayManager.clipDuration
+    }
+
+    private var currentTime: Double {
+        activeComparisonManager?.currentTime ?? replayManager.currentTime
+    }
+
+    private var currentRate: Float {
+        activeComparisonManager?.currentRate ?? replayManager.currentRate
+    }
+
+    private var isPlaying: Bool {
+        activeComparisonManager?.isPlaying ?? replayManager.isPlaying
+    }
+
+    private var activeClipCapturedAt: Date? {
+        activeComparisonManager?.clipCapturedAt ?? replayManager.clipCapturedAt
+    }
+
+    private func stepBackward() {
+        if let activeComparisonManager {
+            activeComparisonManager.stepBackward()
+        } else {
+            replayManager.stepBackward()
+        }
+    }
+
+    private func stepForward() {
+        if let activeComparisonManager {
+            activeComparisonManager.stepForward()
+        } else {
+            replayManager.stepForward()
+        }
+    }
+
+    private func togglePlayPause() {
+        if let activeComparisonManager {
+            activeComparisonManager.togglePlayPause()
+        } else {
+            replayManager.togglePlayPause()
+        }
+    }
+
+    private func pause() {
+        if let activeComparisonManager {
+            activeComparisonManager.pause()
+        } else {
+            replayManager.pause()
+        }
+    }
+
+    private func resume() {
+        if let activeComparisonManager {
+            activeComparisonManager.resume()
+        } else {
+            replayManager.resume()
+        }
+    }
+
+    private func seek(to fraction: Double) {
+        if let activeComparisonManager {
+            activeComparisonManager.seek(to: fraction)
+        } else {
+            replayManager.seek(to: fraction)
+        }
+    }
+
+    private func setRate(_ rate: Float) {
+        if let activeComparisonManager {
+            activeComparisonManager.setRate(rate)
+        } else {
+            replayManager.setRate(rate)
+        }
     }
 
     private func resetAutoHide() {
