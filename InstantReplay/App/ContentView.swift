@@ -212,8 +212,8 @@ struct ContentView: View {
 
     private var comparisonReplayView: some View {
         HStack(spacing: 1) {
-            ReplayPlayerView(replayManager: comparisonReplayManager.live)
-            ReplayPlayerView(replayManager: comparisonReplayManager.reference)
+            ReplayPlayerView(replayManager: comparisonReplayManager.live, videoGravity: .resizeAspect)
+            ReplayPlayerView(replayManager: comparisonReplayManager.reference, videoGravity: .resizeAspect)
         }
         .background(Color.black)
     }

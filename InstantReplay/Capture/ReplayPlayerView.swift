@@ -3,10 +3,20 @@ import SwiftUI
 
 struct ReplayPlayerView: UIViewRepresentable {
     let replayManager: ReplayManager
+    let videoGravity: AVLayerVideoGravity
+
+    init(
+        replayManager: ReplayManager,
+        videoGravity: AVLayerVideoGravity = .resizeAspectFill
+    ) {
+        self.replayManager = replayManager
+        self.videoGravity = videoGravity
+    }
 
     func makeUIView(context: Context) -> ReplayContainerView {
         debugLog("[ReplayPlayerView] makeUIView called")
         let view = ReplayContainerView()
+        view.playerLayer.videoGravity = videoGravity
         replayManager.attachToLayer(view.playerLayer)
         return view
     }
@@ -14,6 +24,7 @@ struct ReplayPlayerView: UIViewRepresentable {
     func updateUIView(_ uiView: ReplayContainerView, context: Context) {
         // Re-attach on updates in case player changed
         debugLog("[ReplayPlayerView] updateUIView called, re-attaching layer")
+        uiView.playerLayer.videoGravity = videoGravity
         replayManager.attachToLayer(uiView.playerLayer)
     }
 }
