@@ -18,7 +18,7 @@ final class CameraManager: NSObject, MediaSourceSession {
     let rollingBuffer = RollingBufferManager()
     let detectionCoordinator = DetectionCoordinator(
         label: "com.edwardahn.InstantReplay.cameraDetection",
-        samplingPolicy: .everyNthFrame(CaptureConstants.poseSubsamplingRate)
+        samplingPolicy: .minimumInterval(1.0 / CaptureConstants.poseDetectionFPS)
     )
     private let sessionQueue = DispatchQueue(label: "com.edwardahn.InstantReplay.camera", qos: .userInitiated)
 
