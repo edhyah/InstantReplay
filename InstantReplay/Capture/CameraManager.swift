@@ -32,6 +32,7 @@ final class CameraManager: NSObject, MediaSourceSession {
     @ObservationIgnored private nonisolated(unsafe) var captureWindowFrameCount: Int = 0
     @ObservationIgnored private nonisolated(unsafe) var captureWindowStartTime: CFTimeInterval = 0
     @ObservationIgnored private nonisolated(unsafe) var measuredCaptureFPS: Double = 0
+    @ObservationIgnored private nonisolated(unsafe) var hasLoggedFirstSample = false
 
     override init() {
         super.init()
@@ -53,22 +54,28 @@ final class CameraManager: NSObject, MediaSourceSession {
     }
 
     nonisolated private func setupSession() {
+        debugLog("[Camera] setupSession position=\(capturePosition)")
         captureSession.beginConfiguration()
         captureSession.sessionPreset = .high
 
         // Add camera input based on current position
         let avPosition = avCapturePosition(for: capturePosition)
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avPosition) else {
+            debugLog("[Camera] no builtInWideAngleCamera for position=\(capturePosition)")
             captureSession.commitConfiguration()
             return
         }
+        debugLog("[Camera] selected device=\(device.localizedName), uniqueID=\(device.uniqueID)")
 
         do {
             let input = try AVCaptureDeviceInput(device: device)
             if captureSession.canAddInput(input) {
                 captureSession.addInput(input)
+            } else {
+                debugLog("[Camera] canAddInput returned false")
             }
         } catch {
+            debugLog("[Camera] failed to create/add input: \(describeNSError(error))")
             captureSession.commitConfiguration()
             return
         }
@@ -78,12 +85,15 @@ final class CameraManager: NSObject, MediaSourceSession {
         videoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
         if captureSession.canAddOutput(videoOutput) {
             captureSession.addOutput(videoOutput)
+        } else {
+            debugLog("[Camera] canAddOutput(videoData) returned false")
         }
 
         captureSession.commitConfiguration()
 
         // Configure 60fps — must find a format that supports it first
         configure60fps(for: device)
+        logActiveFormat(for: device, context: "setup")
     }
 
     nonisolated private func configure60fps(for device: AVCaptureDevice) {
@@ -109,11 +119,14 @@ final class CameraManager: NSObject, MediaSourceSession {
                 let fps = min(range.maxFrameRate, 60)
                 device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
                 device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+                debugLog("[Camera] configured active format for requestedFPS=\(fps), supportedRange=\(range.minFrameRate)-\(range.maxFrameRate)")
+            } else {
+                debugLog("[Camera] no format with >=60fps found; using default active format")
             }
 
             device.unlockForConfiguration()
         } catch {
-            // Fall back to default frame rate
+            debugLog("[Camera] configure60fps failed, using default active format: \(describeNSError(error))")
         }
     }
 
@@ -135,6 +148,7 @@ final class CameraManager: NSObject, MediaSourceSession {
 
             // Add new camera input
             guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avPosition) else {
+                debugLog("[Camera] switchCamera no builtInWideAngleCamera for position=\(newPosition)")
                 captureSession.commitConfiguration()
                 return
             }
@@ -143,8 +157,11 @@ final class CameraManager: NSObject, MediaSourceSession {
                 let input = try AVCaptureDeviceInput(device: device)
                 if captureSession.canAddInput(input) {
                     captureSession.addInput(input)
+                } else {
+                    debugLog("[Camera] switchCamera canAddInput returned false")
                 }
             } catch {
+                debugLog("[Camera] switchCamera failed to create/add input: \(describeNSError(error))")
                 captureSession.commitConfiguration()
                 return
             }
@@ -153,6 +170,7 @@ final class CameraManager: NSObject, MediaSourceSession {
 
             // Configure 60fps for the new device
             configure60fps(for: device)
+            logActiveFormat(for: device, context: "switch")
 
             // Update position on main thread (Observable property)
             DispatchQueue.main.async {
@@ -167,6 +185,7 @@ final class CameraManager: NSObject, MediaSourceSession {
             captureWindowFrameCount = 0
             captureWindowStartTime = 0
             measuredCaptureFPS = 0
+            hasLoggedFirstSample = false
         }
     }
 
@@ -194,6 +213,7 @@ final class CameraManager: NSObject, MediaSourceSession {
         captureWindowStartTime = 0
         measuredCaptureFPS = 0
         isConfigured = false
+        hasLoggedFirstSample = false
     }
 
     func extractClip(jumpTimestamp: CMTime, completion: @escaping @Sendable (ClipAsset?) -> Void) {
@@ -223,6 +243,20 @@ final class CameraManager: NSObject, MediaSourceSession {
         case .back: false
         }
     }
+
+    private nonisolated func logActiveFormat(for device: AVCaptureDevice, context: String) {
+        let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let ranges = device.activeFormat.videoSupportedFrameRateRanges
+            .map { String(format: "%.1f-%.1f", $0.minFrameRate, $0.maxFrameRate) }
+            .joined(separator: ",")
+        debugLog("[Camera] activeFormat context=\(context), dims=\(dimensions.width)x\(dimensions.height), minFrameDuration=\(device.activeVideoMinFrameDuration.seconds), maxFrameDuration=\(device.activeVideoMaxFrameDuration.seconds), ranges=[\(ranges)]")
+    }
+
+    private nonisolated func describeNSError(_ error: Error?) -> String {
+        guard let error else { return "none" }
+        let nsError = error as NSError
+        return "domain=\(nsError.domain), code=\(nsError.code), description=\(nsError.localizedDescription), userInfo=\(nsError.userInfo)"
+    }
 }
 
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -231,6 +265,16 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        if !hasLoggedFirstSample {
+            hasLoggedFirstSample = true
+            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let dimensions = CMSampleBufferGetFormatDescription(sampleBuffer)
+                .map(CMVideoFormatDescriptionGetDimensions)
+            let dimensionsDescription = dimensions
+                .map { "\($0.width)x\($0.height)" } ?? "unknown"
+            debugLog("[Camera] first sample position=\(capturePosition), pts=\(timestamp.seconds), dims=\(dimensionsDescription), connectionOrientationSupported=\(connection.isVideoOrientationSupported), rotationAngleSupported0=\(connection.isVideoRotationAngleSupported(0)), mirrored=\(connection.isVideoMirrored)")
+        }
+
         // Forward every frame to the rolling buffer for disk recording
         rollingBuffer.append(sampleBuffer)
 

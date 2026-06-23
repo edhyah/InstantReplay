@@ -125,12 +125,14 @@ final class RollingBufferManager: @unchecked Sendable {
 
     nonisolated func stop() {
         lock.lock()
+        debugLog("[RollingBuffer] stop: active=\(activeWriter?.fileURL.lastPathComponent ?? "nil"), retiring=\(retiringWriter?.fileURL.lastPathComponent ?? "nil"), segments=\(_segments.count), lastPTS=\(lastPresentationTime.seconds)")
         finalizeAll()
         lock.unlock()
     }
 
     nonisolated func reset() {
         lock.lock()
+        debugLog("[RollingBuffer] reset: active=\(activeWriter?.fileURL.lastPathComponent ?? "nil"), retiring=\(retiringWriter?.fileURL.lastPathComponent ?? "nil"), segments=\(_segments.count), lastPTS=\(lastPresentationTime.seconds)")
         finalizeAll()
         cleanupAllSegmentFiles()
 
@@ -200,7 +202,14 @@ final class RollingBufferManager: @unchecked Sendable {
         let fileURL = segmentDirectory.appendingPathComponent(fileName)
 
         // Remove any existing file at this path
-        try? FileManager.default.removeItem(at: fileURL)
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+                debugLog("[RollingBuffer] removed existing segment file \(fileName)")
+            }
+        } catch {
+            debugLog("[RollingBuffer] failed to remove existing segment file \(fileName): \(describeNSError(error))")
+        }
 
         guard let writer = SegmentWriter(outputURL: fileURL, startTimestamp: timestamp, sourceFormatDescription: formatDesc, isFrontCamera: _isFrontCamera) else {
             return
@@ -249,6 +258,7 @@ final class RollingBufferManager: @unchecked Sendable {
         }
 
         if !removedURLs.isEmpty {
+            debugLog("[RollingBuffer] pruned \(removedURLs.count) old segment file(s)")
             segmentsLock.lock()
             _segments.removeAll { seg in removedURLs.contains(seg.fileURL) }
             segmentsLock.unlock()
@@ -293,8 +303,18 @@ final class RollingBufferManager: @unchecked Sendable {
         let fm = FileManager.default
         if let files = try? fm.contentsOfDirectory(at: segmentDirectory, includingPropertiesForKeys: nil) {
             for file in files {
-                try? fm.removeItem(at: file)
+                do {
+                    try fm.removeItem(at: file)
+                } catch {
+                    debugLog("[RollingBuffer] cleanup failed for \(file.lastPathComponent): \(describeNSError(error))")
+                }
             }
         }
+    }
+
+    private nonisolated func describeNSError(_ error: Error?) -> String {
+        guard let error else { return "none" }
+        let nsError = error as NSError
+        return "domain=\(nsError.domain), code=\(nsError.code), description=\(nsError.localizedDescription), userInfo=\(nsError.userInfo)"
     }
 }

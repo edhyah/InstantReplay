@@ -1,9 +1,21 @@
 import CoreGraphics
 import CoreVideo
+import QuartzCore
 import Vision
 
+struct PoseEstimationResult: Sendable {
+    let observations: [BodyObservation]
+    let rawPoseCount: Int
+}
+
 final class PoseEstimator: Sendable {
+    private nonisolated(unsafe) var lastVisionErrorLogTime: CFTimeInterval = 0
+
     nonisolated func estimatePoses(_ pixelBuffer: CVPixelBuffer, isFrontCamera: Bool = false) -> [BodyObservation] {
+        estimatePoseResult(pixelBuffer, isFrontCamera: isFrontCamera).observations
+    }
+
+    nonisolated func estimatePoseResult(_ pixelBuffer: CVPixelBuffer, isFrontCamera: Bool = false) -> PoseEstimationResult {
         let request = VNDetectHumanBodyPoseRequest()
 
         // Front camera pixel buffers are rotated 180 degrees relative to back camera
@@ -12,11 +24,12 @@ final class PoseEstimator: Sendable {
         do {
             try handler.perform([request])
         } catch {
-            return []
+            logVisionError(error)
+            return PoseEstimationResult(observations: [], rawPoseCount: 0)
         }
 
         guard let results = request.results, !results.isEmpty else {
-            return []
+            return PoseEstimationResult(observations: [], rawPoseCount: 0)
         }
 
         var observations: [BodyObservation] = []
@@ -25,7 +38,7 @@ final class PoseEstimator: Sendable {
             observations.append(body)
         }
 
-        return observations
+        return PoseEstimationResult(observations: observations, rawPoseCount: results.count)
     }
 
     private nonisolated func buildBodyObservation(from pose: VNHumanBodyPoseObservation) -> BodyObservation? {
@@ -69,5 +82,14 @@ final class PoseEstimator: Sendable {
         // Need at least 2 torso joints to compute a meaningful centroid
         guard count >= 2 else { return nil }
         return CGPoint(x: sumX / count, y: sumY / count)
+    }
+
+    private nonisolated func logVisionError(_ error: Error) {
+        let now = CACurrentMediaTime()
+        guard now - lastVisionErrorLogTime >= 1.0 else { return }
+        lastVisionErrorLogTime = now
+
+        let nsError = error as NSError
+        debugLog("[PoseEstimator] Vision error domain=\(nsError.domain), code=\(nsError.code), description=\(nsError.localizedDescription), userInfo=\(nsError.userInfo)")
     }
 }

@@ -5,6 +5,9 @@ struct DetectionPipelineResult: Sendable {
     let trackingResult: BodyTrackingResult
     let stateMachineDebug: StateMachineDebugInfo
     let didDetectMovement: Bool
+    let rawPoseCount: Int
+    let acceptedPoseCount: Int
+    let poseInterval: Double
 }
 
 final class DetectionPipeline: MovementDetector, @unchecked Sendable {
@@ -48,8 +51,8 @@ final class DetectionPipeline: MovementDetector, @unchecked Sendable {
         lastPoseTimestamp = timestamp
         lastPoseWallTime = now
 
-        let observations = poseEstimator.estimatePoses(pixelBuffer, isFrontCamera: isFrontCamera)
-        let trackingResult = bodyTracker.update(with: observations, poseInterval: measuredInterval)
+        let poseResult = poseEstimator.estimatePoseResult(pixelBuffer, isFrontCamera: isFrontCamera)
+        let trackingResult = bodyTracker.update(with: poseResult.observations, poseInterval: measuredInterval)
 
         let detectionFlag = DetectionFlag()
         stateMachine.onMovementDetected = { [weak self] event in
@@ -62,7 +65,10 @@ final class DetectionPipeline: MovementDetector, @unchecked Sendable {
         let result = DetectionPipelineResult(
             trackingResult: trackingResult,
             stateMachineDebug: debugInfo,
-            didDetectMovement: detectionFlag.value
+            didDetectMovement: detectionFlag.value,
+            rawPoseCount: poseResult.rawPoseCount,
+            acceptedPoseCount: poseResult.observations.count,
+            poseInterval: measuredInterval
         )
         onDetectionResult?(result)
     }
