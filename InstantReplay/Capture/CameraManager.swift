@@ -57,6 +57,7 @@ final class CameraManager: NSObject, MediaSourceSession {
         debugLog("[Camera] setupSession position=\(capturePosition)")
         captureSession.beginConfiguration()
         captureSession.sessionPreset = .high
+        removeAllSessionInputsAndOutputs()
 
         // Add camera input based on current position
         let avPosition = avCapturePosition(for: capturePosition)
@@ -80,14 +81,7 @@ final class CameraManager: NSObject, MediaSourceSession {
             return
         }
 
-        // Add video data output with delegate wired up
-        let videoOutput = AVCaptureVideoDataOutput()
-        videoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
-        if captureSession.canAddOutput(videoOutput) {
-            captureSession.addOutput(videoOutput)
-        } else {
-            debugLog("[Camera] canAddOutput(videoData) returned false")
-        }
+        addVideoDataOutput()
 
         captureSession.commitConfiguration()
 
@@ -147,14 +141,7 @@ final class CameraManager: NSObject, MediaSourceSession {
     func switchCamera() {
         sessionQueue.async { [self] in
             captureSession.beginConfiguration()
-
-            // Remove current camera input
-            for input in captureSession.inputs {
-                if let deviceInput = input as? AVCaptureDeviceInput,
-                   deviceInput.device.hasMediaType(.video) {
-                    captureSession.removeInput(deviceInput)
-                }
-            }
+            removeAllSessionInputsAndOutputs()
 
             // Toggle position
             let newPosition = toggledPosition(from: capturePosition)
@@ -180,6 +167,7 @@ final class CameraManager: NSObject, MediaSourceSession {
                 return
             }
 
+            addVideoDataOutput()
             captureSession.commitConfiguration()
 
             // Configure 60fps for the new device
@@ -265,6 +253,39 @@ final class CameraManager: NSObject, MediaSourceSession {
         if lhs.tier != rhs.tier { return lhs.tier > rhs.tier }
         if lhs.area != rhs.area { return lhs.area > rhs.area }
         return lhs.maxFrameRate > rhs.maxFrameRate
+    }
+
+    private nonisolated func removeAllSessionInputsAndOutputs() {
+        let inputCount = captureSession.inputs.count
+        let outputCount = captureSession.outputs.count
+
+        for input in captureSession.inputs {
+            captureSession.removeInput(input)
+        }
+
+        for output in captureSession.outputs {
+            if let videoOutput = output as? AVCaptureVideoDataOutput {
+                videoOutput.setSampleBufferDelegate(nil, queue: nil)
+            }
+            captureSession.removeOutput(output)
+        }
+
+        if inputCount > 0 || outputCount > 0 {
+            debugLog("[Camera] cleared existing session inputs=\(inputCount), outputs=\(outputCount)")
+        }
+    }
+
+    private nonisolated func addVideoDataOutput() {
+        let videoOutput = AVCaptureVideoDataOutput()
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
+
+        if captureSession.canAddOutput(videoOutput) {
+            captureSession.addOutput(videoOutput)
+            debugLog("[Camera] added video output, totalOutputs=\(captureSession.outputs.count)")
+        } else {
+            debugLog("[Camera] canAddOutput(videoData) returned false")
+        }
     }
 
     private nonisolated func logActiveFormat(for device: AVCaptureDevice, context: String) {
