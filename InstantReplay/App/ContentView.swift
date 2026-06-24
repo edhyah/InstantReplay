@@ -406,6 +406,7 @@ struct ContentView: View {
 
     private func logDeviceInfo() {
         let device = UIDevice.current
+        debugLog("[Build] diagnostics=writer-adaptor-v1")
         debugLog("[Device] model=\(device.model), systemVersion=\(device.systemVersion)")
         debugLog("[Device] name=\(device.name)")
         debugLog("[Device] systemName=\(device.systemName)")

@@ -102,13 +102,27 @@ final class CameraManager: NSObject, MediaSourceSession {
 
             var bestFormat: AVCaptureDevice.Format?
             var bestFrameRateRange: AVFrameRateRange?
+            var bestScore: (tier: Int, area: Int32, maxFrameRate: Double) = (0, 0, 0)
 
             for format in device.formats {
+                let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                let area = dimensions.width * dimensions.height
+                let tier: Int
+                if dimensions.width == 1280 && dimensions.height == 720 {
+                    tier = 3
+                } else if area <= 1920 * 1080 {
+                    tier = 2
+                } else {
+                    tier = 1
+                }
+
                 for range in format.videoSupportedFrameRateRanges {
                     if range.maxFrameRate >= 60 {
-                        if bestFrameRateRange == nil || range.maxFrameRate > bestFrameRateRange!.maxFrameRate {
+                        let score = (tier: tier, area: area, maxFrameRate: range.maxFrameRate)
+                        if bestFrameRateRange == nil || isBetterFormatScore(score, than: bestScore) {
                             bestFormat = format
                             bestFrameRateRange = range
+                            bestScore = score
                         }
                     }
                 }
@@ -242,6 +256,15 @@ final class CameraManager: NSObject, MediaSourceSession {
         case .front: true
         case .back: false
         }
+    }
+
+    private nonisolated func isBetterFormatScore(
+        _ lhs: (tier: Int, area: Int32, maxFrameRate: Double),
+        than rhs: (tier: Int, area: Int32, maxFrameRate: Double)
+    ) -> Bool {
+        if lhs.tier != rhs.tier { return lhs.tier > rhs.tier }
+        if lhs.area != rhs.area { return lhs.area > rhs.area }
+        return lhs.maxFrameRate > rhs.maxFrameRate
     }
 
     private nonisolated func logActiveFormat(for device: AVCaptureDevice, context: String) {

@@ -7,6 +7,7 @@ final class SegmentWriter: @unchecked Sendable {
 
     private nonisolated(unsafe) let assetWriter: AVAssetWriter
     private nonisolated(unsafe) let videoInput: AVAssetWriterInput
+    private nonisolated(unsafe) let pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor
     private nonisolated(unsafe) var isFinalized = false
     private nonisolated(unsafe) var frameCount = 0
     private nonisolated(unsafe) var appendFailCount = 0
@@ -32,6 +33,14 @@ final class SegmentWriter: @unchecked Sendable {
 
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
         videoInput.expectsMediaDataInRealTime = true
+        pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: videoInput,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: CMFormatDescriptionGetMediaSubType(sourceFormatDescription),
+                kCVPixelBufferWidthKey as String: Int(dimensions.width),
+                kCVPixelBufferHeightKey as String: Int(dimensions.height),
+            ]
+        )
 
         // Match the front-camera preview: 180 degree rotation plus selfie mirroring.
         if isFrontCamera {
@@ -50,11 +59,18 @@ final class SegmentWriter: @unchecked Sendable {
             return nil
         }
         assetWriter.startSession(atSourceTime: startTimestamp)
-        debugLog("[SegmentWriter] created \(outputURL.lastPathComponent), startTime=\(startTimestamp.seconds), dims=\(dimensions.width)x\(dimensions.height), status=\(assetWriter.status.rawValue)")
+        debugLog("[SegmentWriter] created \(outputURL.lastPathComponent), startTime=\(startTimestamp.seconds), dims=\(dimensions.width)x\(dimensions.height), pixelFormat=\(Self.fourCC(CMFormatDescriptionGetMediaSubType(sourceFormatDescription))), status=\(assetWriter.status.rawValue)")
     }
 
     nonisolated func append(_ sampleBuffer: CMSampleBuffer) {
         guard !isFinalized else { return }
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            appendFailCount += 1
+            if appendFailCount <= 3 {
+                debugLog("[SegmentWriter] \(fileURL.lastPathComponent): no image buffer in sample, frames=\(frameCount)")
+            }
+            return
+        }
         guard videoInput.isReadyForMoreMediaData else {
             appendFailCount += 1
             return
@@ -66,11 +82,12 @@ final class SegmentWriter: @unchecked Sendable {
             appendFailCount += 1
             return
         }
-        let success = videoInput.append(sampleBuffer)
+
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let success = pixelBufferAdaptor.append(pixelBuffer, withPresentationTime: pts)
         if success {
             frameCount += 1
             if frameCount == 1 {
-                let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 debugLog("[SegmentWriter] \(fileURL.lastPathComponent): first frame appended, pts=\(pts.seconds)")
             }
         } else {
@@ -110,5 +127,15 @@ final class SegmentWriter: @unchecked Sendable {
         guard let error else { return "none" }
         let nsError = error as NSError
         return "domain=\(nsError.domain), code=\(nsError.code), description=\(nsError.localizedDescription), userInfo=\(nsError.userInfo)"
+    }
+
+    private nonisolated static func fourCC(_ code: FourCharCode) -> String {
+        let chars = [
+            UInt8((code >> 24) & 0xff),
+            UInt8((code >> 16) & 0xff),
+            UInt8((code >> 8) & 0xff),
+            UInt8(code & 0xff),
+        ]
+        return String(bytes: chars, encoding: .macOSRoman) ?? "\(code)"
     }
 }
