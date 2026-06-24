@@ -23,6 +23,8 @@ struct ContentView: View {
     @State private var comparisonReplayActive: Bool = false
     @State private var controlsVisible: Bool = false
     @State private var latestLiveClip: ClipAsset?
+    @State private var liveReplayExtractionInFlight: Bool = false
+    @State private var lastLiveReplayDetectionTime: CFTimeInterval = -Double.infinity
     @Environment(\.scenePhase) private var scenePhase
 
     // Video input mode
@@ -326,46 +328,69 @@ struct ContentView: View {
         let extractor = ClipExtractor(rollingBuffer: cameraManager.rollingBuffer)
 
         cameraManager.onMovementDetected = { event in
-            debugLog("[Replay] onMovementDetected fired, jumpTimestamp=\(event.jumpTimestamp.seconds)")
+            DispatchQueue.main.async {
+                handleLiveMovementDetected(event, extractor: extractor)
+            }
+        }
+    }
 
-            let segments = cameraManager.rollingBuffer.segments
-            debugLog("[Replay] segments count: \(segments.count)")
-            for (i, seg) in segments.enumerated() {
-                debugLog("[Replay]   segment[\(i)]: start=\(seg.startTimestamp.seconds), end=\(seg.endTimestamp?.seconds ?? -1), url=\(seg.fileURL.lastPathComponent)")
+    private func handleLiveMovementDetected(_ event: MovementDetectionEvent, extractor: ClipExtractor) {
+        let now = CACurrentMediaTime()
+        if liveReplayExtractionInFlight {
+            debugLog("[Replay] ignoring detection while extraction is already in flight, jumpTimestamp=\(event.jumpTimestamp.seconds)")
+            return
+        }
+
+        let elapsedSinceLastReplay = now - lastLiveReplayDetectionTime
+        if elapsedSinceLastReplay < CaptureConstants.liveReplayDetectionCooldown {
+            debugLog("[Replay] ignoring detection during live cooldown, elapsed=\(elapsedSinceLastReplay)s, cooldown=\(CaptureConstants.liveReplayDetectionCooldown)s, jumpTimestamp=\(event.jumpTimestamp.seconds)")
+            return
+        }
+
+        liveReplayExtractionInFlight = true
+        lastLiveReplayDetectionTime = now
+
+        debugLog("[Replay] onMovementDetected fired, jumpTimestamp=\(event.jumpTimestamp.seconds)")
+
+        let segments = cameraManager.rollingBuffer.segments
+        debugLog("[Replay] segments count: \(segments.count)")
+        for (i, seg) in segments.enumerated() {
+            debugLog("[Replay]   segment[\(i)]: start=\(seg.startTimestamp.seconds), end=\(seg.endTimestamp?.seconds ?? -1), url=\(seg.fileURL.lastPathComponent)")
+        }
+
+        if let firstSeg = segments.first {
+            let elapsed = CMTimeGetSeconds(CMTimeSubtract(event.jumpTimestamp, firstSeg.startTimestamp))
+            if elapsed < 1.0 {
+                liveReplayExtractionInFlight = false
+                debugLog("[Replay] buffer too short (\(elapsed)s), skipping")
+                return
+            }
+        }
+
+        let allURLs = Set(segments.map { $0.fileURL })
+        cameraManager.rollingBuffer.markReplayReference(allURLs)
+
+        extractor.extractClip(jumpTimestamp: event.jumpTimestamp) { clipAsset in
+            if let clip = clipAsset {
+                debugLog("[Replay] clip extracted, duration=\(clip.timeRange.duration.seconds), refs=\(clip.referencedURLs.count)")
+            } else {
+                debugLog("[Replay] clip extraction returned nil")
             }
 
-            if let firstSeg = segments.first {
-                let elapsed = CMTimeGetSeconds(CMTimeSubtract(event.jumpTimestamp, firstSeg.startTimestamp))
-                if elapsed < 1.0 {
-                    debugLog("[Replay] buffer too short (\(elapsed)s), skipping")
-                    return
-                }
-            }
-
-            let allURLs = Set(segments.map { $0.fileURL })
-            cameraManager.rollingBuffer.markReplayReference(allURLs)
-
-            extractor.extractClip(jumpTimestamp: event.jumpTimestamp) { clipAsset in
+            DispatchQueue.main.async {
+                liveReplayExtractionInFlight = false
                 if let clip = clipAsset {
-                    debugLog("[Replay] clip extracted, duration=\(clip.timeRange.duration.seconds), refs=\(clip.referencedURLs.count)")
+                    cameraManager.rollingBuffer.markReplayReference(clip.referencedURLs)
+                    latestLiveClip = clip
+                    // IMPORTANT: Set showingReplay first so SwiftUI creates ReplayPlayerView
+                    // and attachToLayer is called before playClip tries to use playerLayer
+                    showingReplay = true
+                    replayAvailable = true
+                    controlsVisible = false
+                    playExtractedClip(clip)
                 } else {
-                    debugLog("[Replay] clip extraction returned nil")
-                }
-
-                DispatchQueue.main.async {
-                    if let clip = clipAsset {
-                        cameraManager.rollingBuffer.markReplayReference(clip.referencedURLs)
-                        latestLiveClip = clip
-                        // IMPORTANT: Set showingReplay first so SwiftUI creates ReplayPlayerView
-                        // and attachToLayer is called before playClip tries to use playerLayer
-                        showingReplay = true
-                        replayAvailable = true
-                        controlsVisible = false
-                        playExtractedClip(clip)
-                    } else {
-                        cameraManager.rollingBuffer.clearReplayReference()
-                        debugLog("[Replay] no clip, cleared references")
-                    }
+                    cameraManager.rollingBuffer.clearReplayReference()
+                    debugLog("[Replay] no clip, cleared references")
                 }
             }
         }
@@ -406,7 +431,7 @@ struct ContentView: View {
 
     private func logDeviceInfo() {
         let device = UIDevice.current
-        debugLog("[Build] diagnostics=session-cleanup-v2")
+        debugLog("[Build] diagnostics=nonmirrored-live-cooldown-v1")
         debugLog("[Device] model=\(device.model), systemVersion=\(device.systemVersion)")
         debugLog("[Device] name=\(device.name)")
         debugLog("[Device] systemName=\(device.systemName)")

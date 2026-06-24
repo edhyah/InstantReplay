@@ -73,10 +73,10 @@ class PreviewContainerView: UIView {
             connection.videoRotationAngle = rotationAngle
         }
 
-        // Set mirroring - front camera should be mirrored for selfie mode
+        // Keep camera footage in real-world orientation so live capture matches imported videos.
         if connection.isVideoMirroringSupported {
             connection.automaticallyAdjustsVideoMirroring = false
-            connection.isVideoMirrored = cameraPosition == .front
+            connection.isVideoMirrored = false
         }
     }
 }

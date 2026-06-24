@@ -42,10 +42,11 @@ final class SegmentWriter: @unchecked Sendable {
             ]
         )
 
-        // Match the front-camera preview: 180 degree rotation plus selfie mirroring.
+        // Front-camera buffers need 180 degree rotation, but should not be selfie-mirrored.
         if isFrontCamera {
-            videoInput.transform = CGAffineTransform(scaleX: 1, y: -1)
-                .translatedBy(x: 0, y: -CGFloat(dimensions.height))
+            videoInput.transform = CGAffineTransform(rotationAngle: .pi)
+                .translatedBy(x: -CGFloat(dimensions.width), y: -CGFloat(dimensions.height))
+            debugLog("[SegmentWriter] applying front-camera 180deg non-mirrored transform")
         }
 
         guard assetWriter.canAdd(videoInput) else {
