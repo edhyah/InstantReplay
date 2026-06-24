@@ -66,7 +66,9 @@ final class ClipExtractor: @unchecked Sendable {
         let earliestStart = relevantSegments.map { $0.startTimestamp }.min()!
         let clipStart = CMTimeMaximum(idealClipStart, earliestStart)
 
-        let referencedURLs = Set(relevantSegments.map { $0.fileURL })
+        let sortedSegments = relevantSegments.sorted {
+            CMTimeCompare($0.startTimestamp, $1.startTimestamp) < 0
+        }
 
         let composition = AVMutableComposition()
         guard let compositionTrack = composition.addMutableTrack(
@@ -77,9 +79,11 @@ final class ClipExtractor: @unchecked Sendable {
         }
 
         var insertionTime = CMTime.zero
+        var coveredUntil = clipStart
+        var referencedURLs = Set<URL>()
         var hasSetTransform = false
 
-        for segment in relevantSegments {
+        for segment in sortedSegments {
             let asset = AVURLAsset(url: segment.fileURL)
             let tracks = asset.tracks(withMediaType: .video)
             debugLog("[ClipExtractor] segment \(segment.fileURL.lastPathComponent): \(tracks.count) video tracks, asset duration=\(asset.duration.seconds)")
@@ -97,10 +101,13 @@ final class ClipExtractor: @unchecked Sendable {
             let segStart = segment.startTimestamp
             let segEnd = segment.endTimestamp!
 
-            let overlapStart = CMTimeMaximum(clipStart, segStart)
+            let overlapStart = CMTimeMaximum(CMTimeMaximum(clipStart, segStart), coveredUntil)
             let overlapEnd = CMTimeMinimum(clipEnd, segEnd)
 
-            guard CMTimeCompare(overlapStart, overlapEnd) < 0 else { continue }
+            guard CMTimeCompare(overlapStart, overlapEnd) < 0 else {
+                debugLog("[ClipExtractor]   skipping duplicate/empty range, coveredUntil=\(coveredUntil.seconds)")
+                continue
+            }
 
             // Convert to segment-local time
             let localStart = CMTimeSubtract(overlapStart, segStart)
@@ -111,6 +118,8 @@ final class ClipExtractor: @unchecked Sendable {
             do {
                 try compositionTrack.insertTimeRange(localRange, of: assetTrack, at: insertionTime)
                 insertionTime = CMTimeAdd(insertionTime, localRange.duration)
+                coveredUntil = CMTimeMaximum(coveredUntil, overlapEnd)
+                referencedURLs.insert(segment.fileURL)
                 debugLog("[ClipExtractor]   inserted, total duration so far=\(insertionTime.seconds)")
             } catch {
                 debugLog("[ClipExtractor]   insertTimeRange failed: \(error)")
@@ -125,6 +134,7 @@ final class ClipExtractor: @unchecked Sendable {
 
         let timeRange = CMTimeRangeMake(start: .zero, duration: insertionTime)
         let syncPoint = CMTimeSubtract(jumpTimestamp, clipStart)
+        debugLog("[ClipExtractor] final clip duration=\(timeRange.duration.seconds), requestedWindow=\(CMTimeSubtract(clipEnd, clipStart).seconds), syncPoint=\(syncPoint.seconds), refs=\(referencedURLs.count)")
         return ClipAsset(asset: composition, timeRange: timeRange, referencedURLs: referencedURLs, syncPoint: syncPoint)
     }
 }
