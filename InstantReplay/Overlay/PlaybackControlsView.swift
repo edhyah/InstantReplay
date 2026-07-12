@@ -23,18 +23,6 @@ struct PlaybackControlsView: View {
 
     var body: some View {
         ZStack {
-            // Invisible tap target to toggle bottom controls
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        visible.toggle()
-                    }
-                    if visible {
-                        resetAutoHide()
-                    }
-                }
-
             // PiP in top-right (during replay or initial black screen)
             if showingReplay || !replayAvailable {
                 VStack {
@@ -103,6 +91,11 @@ struct PlaybackControlsView: View {
         }
         .onAppear {
             updateRecencyText()
+        }
+        .onChange(of: visible) { _, isVisible in
+            if isVisible {
+                resetAutoHide()
+            }
         }
         .onChange(of: isComparisonReplay) {
             updateRecencyText()

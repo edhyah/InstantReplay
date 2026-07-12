@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 struct ReplayPlayerView: UIViewRepresentable {
     let replayManager: ReplayManager
@@ -29,7 +30,124 @@ struct ReplayPlayerView: UIViewRepresentable {
     }
 }
 
-class ReplayContainerView: UIView {
+final class ReplayContainerView: UIView, UIGestureRecognizerDelegate {
+    private static let maximumZoomScale: CGFloat = 6
+
+    private let videoView = ReplayVideoView()
+    private var zoomScale: CGFloat = 1
+    private var panOffset: CGPoint = .zero
+    private var pinchStartScale: CGFloat = 1
+    private var pinchStartOffset: CGPoint = .zero
+    private var pinchLocation: CGPoint = .zero
+    private var panStartOffset: CGPoint = .zero
+
+    var playerLayer: AVPlayerLayer {
+        videoView.playerLayer
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureView()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        videoView.bounds = bounds
+        videoView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        panOffset = clamped(offset: panOffset, at: zoomScale)
+        applyTransform()
+    }
+
+    private func configureView() {
+        backgroundColor = .black
+        clipsToBounds = true
+        addSubview(videoView)
+
+        let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        pinchGesture.delegate = self
+        addGestureRecognizer(pinchGesture)
+
+        let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        panGesture.minimumNumberOfTouches = 1
+        panGesture.maximumNumberOfTouches = 1
+        panGesture.delegate = self
+        addGestureRecognizer(panGesture)
+    }
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            pinchStartScale = zoomScale
+            pinchStartOffset = panOffset
+            pinchLocation = gesture.location(in: self)
+        case .changed, .ended:
+            let newScale = min(max(pinchStartScale * gesture.scale, 1), Self.maximumZoomScale)
+            let ratio = newScale / pinchStartScale
+            let locationFromCenter = CGPoint(
+                x: pinchLocation.x - bounds.midX,
+                y: pinchLocation.y - bounds.midY
+            )
+            let anchoredOffset = CGPoint(
+                x: locationFromCenter.x - ratio * (locationFromCenter.x - pinchStartOffset.x),
+                y: locationFromCenter.y - ratio * (locationFromCenter.y - pinchStartOffset.y)
+            )
+            zoomScale = newScale
+            panOffset = clamped(offset: anchoredOffset, at: newScale)
+            applyTransform()
+        default:
+            break
+        }
+    }
+
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            panStartOffset = panOffset
+        case .changed, .ended:
+            let translation = gesture.translation(in: self)
+            panOffset = clamped(
+                offset: CGPoint(
+                    x: panStartOffset.x + translation.x,
+                    y: panStartOffset.y + translation.y
+                ),
+                at: zoomScale
+            )
+            applyTransform()
+        default:
+            break
+        }
+    }
+
+    private func clamped(offset: CGPoint, at scale: CGFloat) -> CGPoint {
+        let maximumX = bounds.width * (scale - 1) / 2
+        let maximumY = bounds.height * (scale - 1) / 2
+        return CGPoint(
+            x: min(max(offset.x, -maximumX), maximumX),
+            y: min(max(offset.y, -maximumY), maximumY)
+        )
+    }
+
+    private func applyTransform() {
+        videoView.transform = CGAffineTransform(
+            translationX: panOffset.x,
+            y: panOffset.y
+        ).scaledBy(x: zoomScale, y: zoomScale)
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        true
+    }
+}
+
+private final class ReplayVideoView: UIView {
     override class var layerClass: AnyClass {
         AVPlayerLayer.self
     }
@@ -45,9 +163,7 @@ class ReplayContainerView: UIView {
     }
 
     required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        playerLayer.videoGravity = .resizeAspectFill
-        backgroundColor = .black
+        fatalError("init(coder:) has not been implemented")
     }
 }
 

@@ -116,6 +116,11 @@ struct ContentView: View {
             }
         }
         .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                controlsVisible.toggle()
+            }
+        }
         .onTapGesture(count: 3) {
             showDebugConsole.toggle()
         }
